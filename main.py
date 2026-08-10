@@ -391,6 +391,11 @@ def main():
     duration = time.time() - start_time
     result_str = str(result) if result else ""
 
+    # ── Сохраняем артефакты ДО деплоя ──────────────────────────
+    saved_files = save_all_artifacts(run_dir)
+    final_extracted = _extract_files(result_str, run_dir)
+    saved_files.update(final_extracted)
+
     # ── Деплой и верификация (DevOps phase 2) ──────────────────
     deploy_report = ""
     if status == "✅ Успешно":
@@ -405,11 +410,6 @@ def main():
         "status": status,
     }
 
-    # Сохраняем ВСЕ артефакты из всех задач
-    saved_files = save_all_artifacts(run_dir)
-    # Сохраняем финальный вывод (DevOps) тоже
-    final_extracted = _extract_files(result_str, run_dir)
-    saved_files.update(final_extracted)
     report_path = save_report(run_dir, metrics, deploy_report)
 
     print(f"\n{'─' * 54}")
