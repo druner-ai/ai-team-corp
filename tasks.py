@@ -106,16 +106,17 @@ def make_tasks(task_description: str) -> list[Task]:
         Упакуй готовое решение в Docker.
 
         ЧТО СДЕЛАТЬ:
-        1. **Dockerfile**: multi-stage build (builder → runtime), оптимизация слоёв
-        2. **docker-compose.yml**: все сервисы (приложение, БД, кэш, очереди)
-        3. **.env.example**: все переменные окружения с описанием
-        4. **README.md**: как запустить, архитектура, API-документация (ссылками)
+        1. **Dockerfile**: multi-stage build, используй путь `url-shortener/Dockerfile`
+        2. **docker-compose.yml**: все сервисы, путь `url-shortener/docker-compose.yml`
+        3. **.env.example**: все переменные, путь `url-shortener/.env.example`
+        4. **README.md**: как запустить, путь `url-shortener/README.md`
         5. **Healthcheck**: для каждого сервиса
 
         ПРАВИЛА:
         - Не используй latest-теги — фиксируй версии
         - Не копируй .env в образ
         - Используй не-root пользователя в контейнере
+        - Пути файлов ВСЕГДА начинай с `url-shortener/`, не с `path/to/`
         """,
         expected_output="Dockerfile, docker-compose.yml, .env.example, README.md — "
                        "каждый в отдельном markdown-блоке с указанием пути.",
