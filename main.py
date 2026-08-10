@@ -48,8 +48,8 @@ def on_task_complete(output: TaskOutput):
     """Callback — вызывается после каждой завершённой задачи."""
     global _total_cost, _total_tokens_in, _total_tokens_out
 
-    task_name = str(output.task)[:80] if output.task else "unknown"
-    agent_role = output.agent.role if output.agent else "unknown"
+    task_name = output.name or "unknown"
+    agent_role = str(output.agent) if output.agent else "unknown"
     raw_output = str(output.raw) if output.raw else ""
     json_output = output.json_dict or {}
 
