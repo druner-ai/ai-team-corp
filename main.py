@@ -247,6 +247,13 @@ def deploy_and_verify(run_dir: Path) -> str:
     start = time.time()
 
     try:
+        # Копируем .env.example → .env если нужно
+        env_example = project_dir / ".env.example"
+        env_file = project_dir / ".env"
+        if env_example.exists() and not env_file.exists():
+            shutil.copy(env_example, env_file)
+            report_lines.append("📋 .env.example → .env (скопирован)\n")
+
         # 1. Запускаем сервисы
         report_lines.append("### 1. Запуск сервисов\n```")
         r = subprocess.run(
