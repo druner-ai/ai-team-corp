@@ -155,6 +155,9 @@ def _extract_files(text: str, run_dir: Path) -> dict[str, Path]:
             filepath = filepath.replace("path/to/", "", 1)
 
         full_path = run_dir / filepath
+        # Пропускаем если это существующая директория
+        if full_path.is_dir():
+            continue
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(content)
         saved[filepath] = full_path
