@@ -73,7 +73,7 @@ def on_task_complete(output: TaskOutput):
 
     # Считаем по символам если API не вернул usage
     else:
-        _total_tokens_in += len(str(output.task)) // 4 if output.task else 0
+        _total_tokens_in += len(task_name) // 4
         _total_tokens_out += len(raw_output) // 4
 
 
@@ -105,12 +105,20 @@ def _extract_files(text: str, run_dir: Path) -> dict[str, Path]:
 
         # Пропускаем не-файловые метки
         skip_labels = {"python", "dockerfile", "yaml", "json", "markdown", "bash", "text", "sql", "sh"}
-        if filepath in skip_labels or filepath.startswith("http"):
+        if filepath in skip_labels:
+            continue
+        # Пропускаем URL и странные строки
+        if filepath.startswith("http") or filepath.startswith("*") or filepath.startswith("{"):
+            continue
+        # Игнорируем слишком короткое содержимое
+        if len(content) < 20:
             continue
 
         # Нормализуем путь
         if filepath.startswith("path/to/"):
             filepath = filepath.replace("path/to/", "", 1)
+        # Убираем markdown-разметку из имени файла
+        filepath = filepath.strip("`*\"'")
 
         full_path = run_dir / filepath
         full_path.parent.mkdir(parents=True, exist_ok=True)
