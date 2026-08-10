@@ -238,11 +238,10 @@ def deploy_and_verify(run_dir: Path) -> str:
         if r.returncode == 0:
             return f"⚠️ Порт {port} занят — деплой пропущен."
 
-    # Проверяем, что есть Docker и docker-compose
-    for cmd in ["docker", "docker-compose", "docker compose"]:
-        r = subprocess.run(f"which {cmd.split()[0]} 2>/dev/null", shell=True, capture_output=True)
-        if r.returncode != 0 and "docker" in cmd:
-            return "⚠️ Docker не установлен — деплой пропущен."
+    # Проверяем Docker
+    r = subprocess.run("which docker 2>/dev/null", shell=True, capture_output=True)
+    if r.returncode != 0:
+        return "⚠️ Docker не установлен — деплой пропущен."
 
     report_lines = ["## 🚀 Деплой и верификация\n"]
     start = time.time()
