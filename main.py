@@ -170,7 +170,7 @@ def save_all_artifacts(run_dir: Path) -> dict[str, Path]:
     return all_files
 
 
-def save_report(run_dir: Path, metrics: dict) -> Path:
+def save_report(run_dir: Path, metrics: dict, deploy_report: str = "") -> Path:
     """Сохранить финальный отчёт."""
     report_path = run_dir / "REPORT.md"
 
@@ -198,9 +198,123 @@ def save_report(run_dir: Path, metrics: dict) -> Path:
 
 ## Результаты по задачам
 {tasks_summary}
+
+{deploy_report}
 """
     report_path.write_text(report)
     return report_path
+
+
+# ─── deploy & verify ─────────────────────────────────────────
+
+def deploy_and_verify(run_dir: Path) -> str:
+    """DevOps Phase 2: docker compose up, тесты, healthcheck, cleanup."""
+    import subprocess
+    import shutil
+    import tempfile
+
+    # Ищем docker-compose.yml среди сохранённых файлов
+    compose_files = list(run_dir.rglob("docker-compose.yml")) + list(run_dir.rglob("docker-compose.yaml"))
+    dockerfiles = list(run_dir.rglob("Dockerfile"))
+
+    if not compose_files:
+        return "⚠️ docker-compose.yml не найден — деплой пропущен."
+
+    compose_path = compose_files[0]
+    project_dir = compose_path.parent
+
+    # Проверяем, что порты 8000, 5432, 6379 свободны
+    for port in [8000, 5432, 6379]:
+        r = subprocess.run(
+            f"ss -tlnp | grep -q ':{port}'", shell=True,
+            capture_output=True, timeout=5
+        )
+        if r.returncode == 0:
+            return f"⚠️ Порт {port} занят — деплой пропущен."
+
+    # Проверяем, что есть Docker и docker-compose
+    for cmd in ["docker", "docker-compose", "docker compose"]:
+        r = subprocess.run(f"which {cmd.split()[0]} 2>/dev/null", shell=True, capture_output=True)
+        if r.returncode != 0 and "docker" in cmd:
+            return "⚠️ Docker не установлен — деплой пропущен."
+
+    report_lines = ["## 🚀 Деплой и верификация\n"]
+    start = time.time()
+
+    try:
+        # 1. Запускаем сервисы
+        report_lines.append("### 1. Запуск сервисов\n```")
+        r = subprocess.run(
+            "docker compose up -d --wait --wait-timeout 60",
+            shell=True, cwd=str(project_dir),
+            capture_output=True, text=True, timeout=120
+        )
+        report_lines.append(r.stdout.strip())
+        if r.stderr.strip():
+            report_lines.append(r.stderr.strip())
+        report_lines.append("```")
+        if r.returncode != 0:
+            report_lines.append(f"\n❌ docker compose up failed (exit {r.returncode})")
+
+            # Cleanup
+            subprocess.run("docker compose down -v 2>/dev/null", shell=True,
+                          cwd=str(project_dir), capture_output=True, timeout=30)
+            return "\n".join(report_lines)
+
+        # 2. Healthcheck
+        time.sleep(5)
+        report_lines.append("\n### 2. Healthcheck\n```")
+        r = subprocess.run(
+            "curl -sf http://localhost:8000/openapi.json | head -c 500",
+            shell=True, capture_output=True, text=True, timeout=15
+        )
+        if r.returncode == 0:
+            report_lines.append("✅ Сервис отвечает (OpenAPI JSON)")
+            report_lines.append(r.stdout[:300])
+        else:
+            report_lines.append(f"❌ Сервис не отвечает: {r.stderr[:200]}")
+        report_lines.append("```")
+
+        # 3. Прогоняем тесты в контейнере
+        report_lines.append("\n### 3. Тесты (pytest в контейнере)\n```")
+        container = subprocess.run(
+            "docker compose ps -q app 2>/dev/null || docker compose ps -q web 2>/dev/null",
+            shell=True, cwd=str(project_dir),
+            capture_output=True, text=True, timeout=10
+        )
+        app_container = container.stdout.strip()
+
+        if app_container:
+            r = subprocess.run(
+                f"docker exec {app_container} pytest tests/ -v --tb=short 2>&1",
+                shell=True, capture_output=True, text=True, timeout=120
+            )
+            report_lines.append(r.stdout.strip()[:2000])
+            if r.stderr.strip():
+                report_lines.append("--- stderr ---")
+                report_lines.append(r.stderr.strip()[:500])
+            test_passed = (r.returncode == 0)
+        else:
+            report_lines.append("⚠️ Контейнер приложения не найден")
+            test_passed = False
+        report_lines.append("```")
+
+        duration = time.time() - start
+        report_lines.append(f"\n⏱️ Деплой: {duration:.1f} сек | Тесты: {'✅' if test_passed else '❌'}")
+
+        return "\n".join(report_lines)
+
+    except subprocess.TimeoutExpired:
+        return "\n".join(report_lines) + "\n❌ Таймаут деплоя (120 сек)"
+    except Exception as e:
+        return "\n".join(report_lines) + f"\n❌ Ошибка деплоя: {e}"
+    finally:
+        # Всегда чистим
+        subprocess.run(
+            "docker compose down -v 2>/dev/null",
+            shell=True, cwd=str(project_dir),
+            capture_output=True, timeout=30
+        )
 
 
 # ─── signal handler ────────────────────────────────────────────
@@ -271,6 +385,11 @@ def main():
     duration = time.time() - start_time
     result_str = str(result) if result else ""
 
+    # ── Деплой и верификация (DevOps phase 2) ──────────────────
+    deploy_report = ""
+    if status == "✅ Успешно":
+        deploy_report = deploy_and_verify(run_dir)
+
     metrics = {
         "duration": duration,
         "tokens_in": _total_tokens_in,
@@ -285,7 +404,7 @@ def main():
     # Сохраняем финальный вывод (DevOps) тоже
     final_extracted = _extract_files(result_str, run_dir)
     saved_files.update(final_extracted)
-    report_path = save_report(run_dir, metrics)
+    report_path = save_report(run_dir, metrics, deploy_report)
 
     print(f"\n{'─' * 54}")
     print(f"📊 Метрики выполнения")
