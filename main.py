@@ -102,6 +102,12 @@ def _role_to_model_key(role: str) -> str:
 
 def _is_valid_filepath(filepath: str) -> bool:
     """Проверить, похож ли путь на реальный файл."""
+    # Имена без расширения, но с путём
+    special_names = {"Dockerfile", "Makefile", "docker-compose.yml", "docker-compose.yaml",
+                     ".env.example", ".gitignore", "README.md", "LICENSE", "requirements.txt",
+                     "pyproject.toml"}
+    if filepath in special_names or filepath.split("/")[-1] in special_names:
+        return True
     # Должен содержать / (директорию) или заканчиваться известным расширением
     valid_extensions = {".py", ".md", ".yml", ".yaml", ".toml", ".txt", ".env", ".sh", 
                         ".json", ".cfg", ".ini", ".example", ".sql", ".html", ".css", ".js"}
