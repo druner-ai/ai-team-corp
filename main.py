@@ -73,8 +73,16 @@ def on_task_complete(output: TaskOutput):
 
     # Считаем по символам если API не вернул usage
     else:
-        _total_tokens_in += len(task_name) // 4
-        _total_tokens_out += len(raw_output) // 4
+        est_tokens_in = len(task_name) // 4
+        est_tokens_out = len(raw_output) // 4
+        _total_tokens_in += est_tokens_in
+        _total_tokens_out += est_tokens_out
+
+        # Считаем стоимость по оценке
+        model_key = _role_to_model_key(agent_role)
+        price_in, price_out = MODELS.get(model_key, MODELS["developer"])["price_per_1m"]
+        cost = (est_tokens_in / 1_000_000) * price_in + (est_tokens_out / 1_000_000) * price_out
+        _total_cost += cost
 
 
 def _role_to_model_key(role: str) -> str:
@@ -92,6 +100,26 @@ def _role_to_model_key(role: str) -> str:
 
 # ─── artifact saver ────────────────────────────────────────────
 
+def _is_valid_filepath(filepath: str) -> bool:
+    """Проверить, похож ли путь на реальный файл."""
+    # Должен содержать / (директорию) или заканчиваться известным расширением
+    valid_extensions = {".py", ".md", ".yml", ".yaml", ".toml", ".txt", ".env", ".sh", 
+                        ".json", ".cfg", ".ini", ".example", ".sql", ".html", ".css", ".js"}
+    has_slash = "/" in filepath
+    has_ext = any(filepath.endswith(ext) for ext in valid_extensions)
+    if not (has_slash or has_ext):
+        return False
+    # Не markdown-артефакты
+    if filepath.startswith("*") or filepath.startswith("┌") or filepath.startswith("│"):
+        return False
+    # Не SQL/JSON строки
+    if filepath.startswith("DATABASE_URL") or filepath.startswith("{"):
+        return False
+    if filepath.startswith("@") and not has_slash:
+        return False
+    return True
+
+
 def _extract_files(text: str, run_dir: Path) -> dict[str, Path]:
     """Извлечь файлы из markdown-блоков с путями."""
     saved = {}
@@ -107,18 +135,18 @@ def _extract_files(text: str, run_dir: Path) -> dict[str, Path]:
         skip_labels = {"python", "dockerfile", "yaml", "json", "markdown", "bash", "text", "sql", "sh"}
         if filepath in skip_labels:
             continue
-        # Пропускаем URL и странные строки
-        if filepath.startswith("http") or filepath.startswith("*") or filepath.startswith("{"):
-            continue
         # Игнорируем слишком короткое содержимое
         if len(content) < 20:
+            continue
+        # Убираем markdown-разметку из имени файла
+        filepath = filepath.strip("`*\"'")
+        # Проверяем, похоже ли на реальный путь
+        if not _is_valid_filepath(filepath):
             continue
 
         # Нормализуем путь
         if filepath.startswith("path/to/"):
             filepath = filepath.replace("path/to/", "", 1)
-        # Убираем markdown-разметку из имени файла
-        filepath = filepath.strip("`*\"'")
 
         full_path = run_dir / filepath
         full_path.parent.mkdir(parents=True, exist_ok=True)
