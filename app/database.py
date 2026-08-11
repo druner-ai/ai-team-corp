@@ -1,26 +1,34 @@
-# Исправлено: добавлена функция init_db для создания таблиц, если они не существуют
-# Это решает проблему 'no such table: urls' в тестах
+import aiosqlite
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase
-
-from app.config import settings
-
-engine = create_async_engine(settings.database_url, echo=False)
-async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+DATABASE_URL = "url_shortener.db"
 
 
-class Base(DeclarativeBase):
-    pass
+async def get_db():
+    db = await aiosqlite.connect(DATABASE_URL)
+    db.row_factory = aiosqlite.Row
+    try:
+        yield db
+    finally:
+        await db.close()
 
 
 async def init_db():
-    """Создаёт все таблицы в базе данных, если они ещё не существуют."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
-async def get_session() -> AsyncSession:
-    """Генератор асинхронной сессии для внедрения зависимостей."""
-    async with async_session() as session:
-        yield session
+    async with aiosqlite.connect(DATABASE_URL) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS urls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slug TEXT UNIQUE NOT NULL,
+                original_url TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS visits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url_id INTEGER NOT NULL,
+                visited_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                ip_address TEXT,
+                FOREIGN KEY (url_id) REFERENCES urls (id)
+            )
+        """)
+        await db.commit()
