@@ -503,17 +503,24 @@ def main():
     # ── Создать Pull Request ────────────────────────────────────
     pr_url = None
     if status == "✅ Успешно":
-        pr_url = create_pr_from_run(run_dir, task, timestamp)
+        pr_url = create_pr_from_run(run_dir, task, timestamp, metrics, deploy_report)
 
 
-def create_pr_from_run(run_dir: Path, task: str, timestamp: str) -> str | None:
+def create_pr_from_run(run_dir: Path, task: str, timestamp: str,
+                       metrics: dict | None = None, deploy_report: str = "") -> str | None:
     """Создать ветку, запушить код и открыть PR."""
     import subprocess
     import shutil
-    import tempfile
 
     branch = f"ai-team/{timestamp}"
     title = task[:80] + ("..." if len(task) > 80 else "")
+
+    # Собираем статистику
+    metrics = metrics or {}
+    code_lines = _count_code_lines(run_dir)
+    file_list = _list_code_files(run_dir)
+    test_status = "❌" if "❌" in deploy_report else ("✅" if deploy_report else "—")
+    deploy_ok = "✅" if deploy_report and "❌" not in deploy_report else ("❌" if deploy_report else "—")
 
     try:
         # 0. Сохраняем текущие изменения перед переключением
@@ -561,9 +568,35 @@ def create_pr_from_run(run_dir: Path, task: str, timestamp: str) -> str | None:
         if push_result.returncode != 0:
             print(f"\n⚠️ Push failed: {push_result.stderr[:200]}")
 
-        # 5. Создаём PR
+        # 5. Создаём PR с богатым описанием
         from gh_pr import create_pr
-        body = f"🤖 Сгенерировано AI-командой\n\n**Задача:** {task}\n**Ветка:** `{branch}`\n**Отчёт:** `{run_dir}/REPORT.md`"
+        body = f"""## 🤖 AI-команда
+
+**Задача:** {task}
+
+### 📊 Результаты
+
+| Параметр | Значение |
+|----------|----------|
+| ⏱️ Время | {metrics.get('duration', 0):.1f} сек |
+| 💰 Цена | ${metrics.get('cost', 0):.4f} |
+| 📝 Токенов | {metrics.get('tokens_in', 0):,} → {metrics.get('tokens_out', 0):,} |
+| 📁 Файлов | {len(file_list)} |
+| 📄 Строк кода | {code_lines} |
+| 🧪 Тесты | {test_status} |
+| 🐳 Деплой | {deploy_ok} |
+
+### 🏗️ Модели
+
+{metrics.get('models', '—')}
+
+### 📁 Сгенерированные файлы
+
+{file_list}
+
+---
+*Ветка `{branch}` • Отчёт `{run_dir}/REPORT.md`*
+"""
         pr_url = create_pr(branch, f"🤖 {title}", body)
         if pr_url:
             print(f"\n🔀 PR создан: {pr_url}")
@@ -579,6 +612,33 @@ def create_pr_from_run(run_dir: Path, task: str, timestamp: str) -> str | None:
         subprocess.run(["git", "branch", "-D", branch], capture_output=True, timeout=10)
         subprocess.run(["git", "stash", "pop"], capture_output=True, timeout=10)
         return None
+
+
+def _count_code_lines(run_dir: Path) -> int:
+    """Посчитать строки в сгенерированном коде."""
+    total = 0
+    for f in run_dir.rglob("*"):
+        if f.is_file() and f.suffix in (".py", ".js", ".ts", ".sql", ".yaml", ".yml", ".toml"):
+            if "__pycache__" not in str(f) and ".venv" not in str(f):
+                try:
+                    total += len(f.read_text().splitlines())
+                except Exception:
+                    pass
+    return total
+
+
+def _list_code_files(run_dir: Path) -> str:
+    """Список файлов для PR description."""
+    files = []
+    for f in sorted(run_dir.rglob("*")):
+        if f.is_file() and not f.name.startswith("task_") and f.name != "REPORT.md":
+            if "__pycache__" not in str(f) and ".venv" not in str(f):
+                rel = f.relative_to(run_dir)
+                ext = f.suffix.lstrip(".") or "file"
+                files.append(f"`{rel}`")
+    if not files:
+        return "—"
+    return "\n".join(files[:30]) + ("\n..." if len(files) > 30 else "")
 
 
 if __name__ == "__main__":

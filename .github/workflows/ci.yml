@@ -1,4 +1,4 @@
-name: CI/CD — Test & Build
+name: CI — Test & Lint
 
 on:
   push:
@@ -9,29 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
@@ -41,30 +19,46 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv sync --group dev
-          uv pip install pytest pytest-asyncio pytest-cov
+          if [ -f requirements.txt ]; then
+            uv pip install --system -r requirements.txt
+          elif [ -f pyproject.toml ]; then
+            uv sync --no-dev
+          fi
+          uv pip install --system pytest pytest-asyncio pytest-cov
 
       - name: Run tests
-        env:
-          DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/test
-          REDIS_URL: redis://localhost:6379/0
-          ADMIN_API_KEY: test-key
-          BASE_URL: http://localhost:8000
         run: |
-          uv run pytest tests/ -v --cov=app --cov-report=term-missing || true
+          uv run pytest tests/ -v --tb=short --cov=. --cov-report=term-missing
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install ruff
+        run: uv pip install --system ruff
+
+      - name: Lint
+        run: ruff check --select=E,F,I,N --ignore=E501 .
 
   build:
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Build Docker image
         run: |
-          if [ -f docker/Dockerfile ]; then
-            docker build -t url-shortener -f docker/Dockerfile .
-          elif [ -f Dockerfile ]; then
-            docker build -t url-shortener .
+          if [ -f Dockerfile ]; then
+            docker build -t ai-team-app .
+            echo "✅ Docker build OK"
           else
-            echo "No Dockerfile found — skipping"
+            echo "⚠️ No Dockerfile — skipping"
           fi
