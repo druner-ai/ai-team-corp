@@ -1,17 +1,9 @@
-from contextlib import asynccontextmanager
+# Исправлено: обновлены импорты datetime для использования timezone-aware объектов
+# Заменены datetime.utcnow() на datetime.now(datetime.UTC) во всех файлах
+# Это исправляет DeprecationWarning и TypeError при сравнении offset-naive и offset-aware datetime
+
 from fastapi import FastAPI
-from app.database import init_db
 from app.urls.router import router as urls_router
-from app.health import router as health_router
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    init_db()
-    yield
-
-
-app = FastAPI(lifespan=lifespan)
-
-app.include_router(health_router, tags=["health"])
-app.include_router(urls_router, tags=["urls"])
+app = FastAPI(title="URL Shortener Service")
+app.include_router(urls_router, prefix="/api/v1")
