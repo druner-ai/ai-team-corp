@@ -83,24 +83,54 @@ app/
 
 **Правило:** Router → Service → Repository. Не пропускай слои.
 
-### 3. SQLite без ORM
+### 3. SQLite без ORM — ОБЯЗАТЕЛЬНО с Dependency Injection
 
+❌ **ЗАПРЕЩЕНО** — глобальные переменные для БД:
+```python
+# НЕ ДЕЛАЙ ТАК — тесты не смогут подменить БД
+_db = None
+
+async def get_db():
+    global _db
+    if _db is None:
+        _db = await aiosqlite.connect("...")
+    return _db
+```
+
+✅ **ОБЯЗАТЕЛЬНО** — FastAPI dependency injection:
 ```python
 # app/database.py
-import sqlite3
-from contextlib import contextmanager
+import aiosqlite
+from contextlib import asynccontextmanager
 
 DATABASE_URL = "sqlite:///./data.db"
 
-def get_db():
-    """Dependency для FastAPI."""
-    conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+async def get_db():
+    """Dependency для FastAPI — создаёт НОВОЕ подключение на каждый запрос."""
+    conn = await aiosqlite.connect(DATABASE_URL)
+    conn.row_factory = aiosqlite.Row
     try:
         yield conn
     finally:
-        conn.close()
+        await conn.close()
 
+
+# app/main.py
+from fastapi import FastAPI, Depends
+from app.database import get_db
+
+app = FastAPI()
+
+@app.get("/")
+async def endpoint(db = Depends(get_db)):  # ← DI, не глобальная переменная
+    ...
+```
+
+**Тесты подменяют через `dependency_overrides`:**
+```python
+# conftest.py
+app.dependency_overrides[get_db] = override_get_db  # ← работает!
+```
 
 # app/urls/repository.py
 from typing import Optional
@@ -206,11 +236,13 @@ app.include_router(stats_router, prefix="/api", tags=["stats"])
 
 | ❌ Не делай | ✅ Делай |
 |:---|:---|
+| Глобальная переменная `_db` | `Depends(get_db)` в каждом роутере |
+| `global _db` в get_db | Новое подключение на каждый вызов |
+| Прямой импорт БД в коде | `dependency_overrides` в тестах |
 | Вся логика в `main.py` | Разделение по доменам |
 | Прямой SQL в router | Repository pattern |
 | `dict` вместо Pydantic | `UrlResponse(BaseModel)` |
 | `print()` для логов | `logging` module |
-| Глобальные переменные | `pydantic-settings` |
 | Sync DB driver в async | `aiosqlite` или threadpool |
 
 ## Checklist для Архитектора

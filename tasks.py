@@ -73,6 +73,12 @@ def make_tasks(task_description: str) -> list[Task]:
         ПАТТЕРНЫ ТЕСТИРОВАНИЯ (обязательно следуй):
         {_patterns['pytest']}
 
+        КРИТИЧНО — DEPENDENCY INJECTION:
+        - Все функции-обработчики ДОЛЖНЫ получать БД через Depends(get_db)
+        - ЗАПРЕЩЕНО использовать глобальные переменные для подключения к БД
+        - get_db() должна быть generator function (yield, не return)
+        - Тесты подменяют БД через app.dependency_overrides[get_db] — это работает только с DI
+
         КРИТИЧНО — ЗАВИСИМОСТИ ДЛЯ ТЕСТОВ:
         Все библиотеки, которые импортируются в tests/ (httpx, pytest-asyncio, aiosqlite,
         freezegun и т.д.), ДОЛЖНЫ быть в requirements-dev.txt. DevOps будет использовать
