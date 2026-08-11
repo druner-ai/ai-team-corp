@@ -47,5 +47,8 @@ MAX_BUDGET_USD = 0.15
 # Максимум циклов ревью (QA → разработчик → правки)
 MAX_REVIEW_CYCLES = 1
 
+# Максимум попыток исправить падающий CI (CI fix loop)
+MAX_CI_FIX_ATTEMPTS = 3
+
 # Выходная директория для артефактов
 OUTPUT_DIR = "output"

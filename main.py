@@ -29,7 +29,7 @@ load_dotenv("/home/deploy/hermes/data/.env")
 from crewai import Crew, Process
 from crewai.tasks.task_output import TaskOutput
 
-from config import MODELS, FALLBACK_MODEL, MAX_BUDGET_USD, MAX_REVIEW_CYCLES, OUTPUT_DIR, VERSION
+from config import MODELS, FALLBACK_MODEL, MAX_BUDGET_USD, MAX_REVIEW_CYCLES, MAX_CI_FIX_ATTEMPTS, OUTPUT_DIR, VERSION
 from agents import architect, developer, qa_gate, devops
 from tasks import make_tasks
 
@@ -527,6 +527,249 @@ def main():
     pr_url = None
     if status == "✅ Успешно":
         pr_url = create_pr_from_run(run_dir, task, timestamp, metrics, deploy_report)
+
+    # ── CI fix loop: ждём CI, при падении — доработка ──────────
+    if pr_url:
+        ci_fix_loop(pr_url, run_dir, task, timestamp)
+
+
+def _wait_for_ci_run(branch: str, timeout: int = 600) -> dict | None:
+    """Ждать появления и завершения CI run для ветки. Возвращает run dict или None."""
+    import requests
+
+    token = os.getenv("GITHUB_TOKEN")
+    if not token:
+        return None
+    user = os.getenv("GITHUB_USER", "druner-ai")
+    repo = os.getenv("GITHUB_REPO", "ai-team-corp")
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+    api = f"https://api.github.com/repos/{user}/{repo}"
+
+    deadline = time.time() + timeout
+    run_id = None
+
+    # Фаза 1: ждём появления run для ветки (до 2 мин)
+    while time.time() < deadline and run_id is None:
+        try:
+            r = requests.get(f"{api}/actions/runs?branch={branch}&per_page=5",
+                             headers=headers, timeout=10)
+            if r.status_code == 200:
+                runs = r.json().get("workflow_runs", [])
+                if runs:
+                    run_id = runs[0]["id"]
+                    print(f"  🔄 CI run {run_id} найден, статус: {runs[0]['status']}")
+                    break
+        except Exception:
+            pass
+        time.sleep(10)
+
+    if run_id is None:
+        print(f"  ⚠️ CI run для {branch} не появился за 2 мин")
+        return None
+
+    # Фаза 2: ждём завершения run
+    while time.time() < deadline:
+        try:
+            r = requests.get(f"{api}/actions/runs/{run_id}", headers=headers, timeout=10)
+            if r.status_code == 200:
+                run = r.json()
+                if run["status"] == "completed":
+                    return run
+        except Exception:
+            pass
+        time.sleep(15)
+
+    print(f"  ⚠️ CI run {run_id} не завершился за {timeout} сек")
+    return None
+
+
+def _get_ci_failure_logs(run_id: int, max_chars: int = 6000) -> str:
+    """Скачать логи failed-джобов CI run. Возвращает хвост лога (самое важное)."""
+    import requests
+
+    token = os.getenv("GITHUB_TOKEN")
+    user = os.getenv("GITHUB_USER", "druner-ai")
+    repo = os.getenv("GITHUB_REPO", "ai-team-corp")
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+    api = f"https://api.github.com/repos/{user}/{repo}"
+
+    try:
+        # Получаем джобы run-а
+        r = requests.get(f"{api}/actions/runs/{run_id}/jobs", headers=headers, timeout=10)
+        if r.status_code != 200:
+            return ""
+        failed_jobs = [j for j in r.json().get("jobs", []) if j.get("conclusion") == "failure"]
+        if not failed_jobs:
+            return ""
+
+        # Берём лог первой failed-джобы
+        job_id = failed_jobs[0]["id"]
+        log_r = requests.get(f"{api}/actions/jobs/{job_id}/logs",
+                             headers=headers, timeout=20, allow_redirects=True)
+        if log_r.status_code != 200:
+            return ""
+
+        # Хвост лога — там ошибки
+        return log_r.text[-max_chars:]
+    except Exception:
+        return ""
+
+
+def _run_ci_fix(arch_doc: str, ci_logs: str, run_dir: Path) -> int:
+    """Запустить Разработчика для исправления CI-ошибок. Возвращает кол-во новых файлов."""
+    from crewai import Task, Crew, Process
+    from output_models import CodeOutput
+    from tasks import make_tasks
+
+    # Создаём fix-задачу с CI-логами
+    fix_task = Task(
+        description=f"""
+        CI/CD пайплайн упал. Исправь код, чтобы тесты прошли.
+
+        АРХИТЕКТУРНЫЙ ДОКУМЕНТ (для контекста):
+        {arch_doc[:2000]}
+
+        ЛОГИ ОШИБОК CI (последние строки — самое важное):
+        ```
+        {ci_logs}
+        ```
+
+        ПРАВИЛА:
+        - Исправь ТОЛЬКО то, что падает в CI (логические ошибки, инициализация БД, фикстуры)
+        - Верни ПОЛНУЮ кодовую базу (все файлы), а не только исправленные
+        - В поле content первого файла добавь комментарий: что исправлено и почему
+        - НЕ меняй архитектуру без крайней необходимости
+        - Убедись, что conftest.py инициализирует БД для тестов (fixture, lifespan и т.д.)
+        """,
+        expected_output="JSON с полем files — полная кодовая база с исправлениями.",
+        agent=developer,
+        output_pydantic=CodeOutput,
+    )
+
+    crew = Crew(
+        agents=[developer],
+        tasks=[fix_task],
+        process=Process.sequential,
+        verbose=False,
+    )
+
+    try:
+        result = crew.kickoff()
+        # Извлекаем файлы: сериализуем pydantic в JSON, затем парсим
+        result_str = ""
+        if hasattr(result, "json_dict") and result.json_dict:
+            result_str = json.dumps(result.json_dict, ensure_ascii=False)
+        elif hasattr(result, "pydantic") and result.pydantic:
+            result_str = result.pydantic.model_dump_json()
+        else:
+            result_str = str(result) if result else ""
+        new_files = _extract_files(result_str, run_dir)
+        return len(new_files)
+    except Exception as e:
+        print(f"  ⚠️ CI fix failed: {e}")
+        return 0
+
+
+def _push_fix_to_pr(branch: str, run_dir: Path) -> bool:
+    """Запушить исправленные файлы в существующую ветку PR. True = успех."""
+    import subprocess
+    import shutil
+
+    worktree_dir = Path(f"/tmp/ai-team-fix-{branch.split('/')[-1]}")
+    try:
+        r = subprocess.run(
+            ["git", "worktree", "add", str(worktree_dir), branch],
+            capture_output=True, text=True, timeout=15
+        )
+        if r.returncode != 0:
+            return False
+
+        code_files = [
+            f for f in run_dir.rglob("*")
+            if f.is_file()
+            and not f.name.startswith("task_")
+            and f.name != "REPORT.md"
+            and f.name not in (".env", ".env.example", ".gitignore")
+            and "__pycache__" not in str(f)
+            and ".venv" not in str(f)
+            and ".collision" not in f.suffix
+        ]
+        for src in code_files:
+            rel = src.relative_to(run_dir)
+            dst = worktree_dir / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+        subprocess.run(["git", "add", "-A"], cwd=str(worktree_dir), capture_output=True, timeout=10)
+        r = subprocess.run(
+            ["git", "commit", "-m", "fix: исправление ошибок CI"],
+            cwd=str(worktree_dir), capture_output=True, text=True, timeout=10
+        )
+        if "nothing to commit" in r.stdout + r.stderr:
+            return False
+
+        r = subprocess.run(["git", "push"], cwd=str(worktree_dir),
+                           capture_output=True, text=True, timeout=30)
+        return r.returncode == 0
+    except Exception:
+        return False
+    finally:
+        subprocess.run(["git", "worktree", "remove", str(worktree_dir), "--force"],
+                      capture_output=True, timeout=15)
+
+
+def ci_fix_loop(pr_url: str, run_dir: Path, task: str, timestamp: str) -> None:
+    """Ждать CI → при падении запускать доработку → пушить фикс → повторять."""
+    branch = f"ai-team/{timestamp}"
+
+    # Извлекаем архитектурный документ для контекста fix-задачи
+    arch_doc = ""
+    for name, role, raw, _ in _all_outputs:
+        if "архитект" in role.lower():
+            arch_doc = raw
+            break
+
+    for attempt in range(1, MAX_CI_FIX_ATTEMPTS + 1):
+        print(f"\n⏳ Ожидание CI для {branch} (попытка {attempt}/{MAX_CI_FIX_ATTEMPTS})...")
+        run = _wait_for_ci_run(branch, timeout=600)
+
+        if run is None:
+            print(f"  ⚠️ CI run не найден — feedback loop пропущен")
+            return
+
+        conclusion = run.get("conclusion")
+        print(f"  CI результат: {conclusion}")
+
+        if conclusion == "success":
+            print(f"\n🎉 CI ЗЕЛЁНЫЙ! PR готов к ревью: {pr_url}")
+            return
+
+        if conclusion != "failure":
+            print(f"  ⚠️ CI завершился со статусом {conclusion} — пропускаем")
+            return
+
+        # CI упал — получаем логи и запускаем фикс
+        print(f"\n🔴 CI упал (попытка {attempt}). Получаю логи...")
+        ci_logs = _get_ci_failure_logs(run["id"])
+        if not ci_logs:
+            print(f"  ⚠️ Не удалось получить логи CI")
+            return
+
+        print(f"  🔧 Запускаю Разработчика для исправления...")
+        new_files = _run_ci_fix(arch_doc, ci_logs, run_dir)
+        if new_files == 0:
+            print(f"  ⚠️ Разработчик не внёс изменений — прекращаю loop")
+            return
+
+        print(f"  📦 Запушиваю фикс в {branch}...")
+        if not _push_fix_to_pr(branch, run_dir):
+            print(f"  ⚠️ Не удалось запушить фикс — прекращаю loop")
+            return
+
+        print(f"  ✅ Фикс запушен. Жду новый CI run...")
+        time.sleep(10)  # даём GitHub время создать новый run
+
+    print(f"\n⚠️ CI не стал зелёным за {MAX_CI_FIX_ATTEMPTS} попыток. PR требует ручного ревью: {pr_url}")
 
 
 def create_pr_from_run(run_dir: Path, task: str, timestamp: str,
