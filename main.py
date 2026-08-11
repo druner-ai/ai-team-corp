@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-AI Team Corporation v1.1 — оркестратор AI-команды разработки.
+AI Team Corporation v1.2 — оркестратор AI-команды разработки.
 
 Архитектор (GLM-5.2) → Разработчик (DeepSeek V4 Pro) + QA архитектуры (параллельно)
-    → QA кода (DeepSeek Flash) → правки (макс 1 цикл) → DevOps (DeepSeek Flash)
+    → QA кода (Codestral 2508) → правки (макс 1 цикл) → DevOps (DeepSeek V4 Pro)
 
-Фиксы v1.1:
-- task_callback: захват вывода КАЖДОЙ задачи (не только последней)
-- output_file: сохранение каждой задачи в отдельный файл
-- cost: реальный подсчёт токенов из ответов модели
-- paths: правильные пути артефактов
+Фиксы v1.2:
+- QA: DeepSeek Flash → Codestral 2508 (лучше находит баги)
+- DevOps: DeepSeek Flash → DeepSeek V4 Pro (стабильнее)
+- deploy: автоопределение имени сервиса (не хардкод app/web)
+- deploy: host-fallback для тестов, если нет в контейнере
+- tasks: DevOps промпт — без url-shortener, с COPY tests, без version
 
 Использование:
     uv run python main.py "Создай REST API для блога..."
@@ -292,25 +293,60 @@ def deploy_and_verify(run_dir: Path) -> str:
 
         # 3. Прогоняем тесты в контейнере
         report_lines.append("\n### 3. Тесты (pytest в контейнере)\n```")
-        container = subprocess.run(
-            "docker compose ps -q app 2>/dev/null || docker compose ps -q web 2>/dev/null",
+        # Находим имя сервиса приложения (не db/redis/postgres)
+        services = subprocess.run(
+            "docker compose config --services 2>/dev/null",
             shell=True, cwd=str(project_dir),
             capture_output=True, text=True, timeout=10
         )
-        app_container = container.stdout.strip()
+        app_service = None
+        infra = {"db", "redis", "postgres", "postgresql", "cache", "broker"}
+        for svc in services.stdout.strip().split("\n"):
+            if svc and svc.lower() not in infra:
+                app_service = svc
+                break
+
+        if app_service:
+            container = subprocess.run(
+                f"docker compose ps -q {app_service} 2>/dev/null",
+                shell=True, cwd=str(project_dir),
+                capture_output=True, text=True, timeout=10
+            )
+            app_container = container.stdout.strip()
+        else:
+            app_container = ""
 
         if app_container:
             r = subprocess.run(
                 f"docker exec {app_container} pytest tests/ -v --tb=short 2>&1",
                 shell=True, capture_output=True, text=True, timeout=120
             )
-            report_lines.append(r.stdout.strip()[:2000])
-            if r.stderr.strip():
-                report_lines.append("--- stderr ---")
-                report_lines.append(r.stderr.strip()[:500])
-            test_passed = (r.returncode == 0)
+            output = r.stdout.strip()
+            # Если тестов нет в контейнере — запускаем с хоста
+            if "file or directory not found: tests/" in output or "no tests ran" in output.lower():
+                report_lines.append("(тестов нет в контейнере — запускаю с хоста)")
+                host_tests = (run_dir / "tests").exists()
+                if host_tests:
+                    r2 = subprocess.run(
+                        f"cd {run_dir} && python3 -m pytest tests/ -v --tb=short 2>&1",
+                        shell=True, capture_output=True, text=True, timeout=120
+                    )
+                    report_lines.append(r2.stdout.strip()[:2000])
+                    if r2.stderr.strip():
+                        report_lines.append("--- stderr ---")
+                        report_lines.append(r2.stderr.strip()[:500])
+                    test_passed = (r2.returncode == 0)
+                else:
+                    report_lines.append("⚠️ tests/ не найден ни в контейнере, ни на хосте")
+                    test_passed = False
+            else:
+                report_lines.append(output[:2000])
+                if r.stderr.strip():
+                    report_lines.append("--- stderr ---")
+                    report_lines.append(r.stderr.strip()[:500])
+                test_passed = (r.returncode == 0)
         else:
-            report_lines.append("⚠️ Контейнер приложения не найден")
+            report_lines.append(f"⚠️ Контейнер приложения не найден (сервис: {app_service or '—'})")
             test_passed = False
         report_lines.append("```")
 

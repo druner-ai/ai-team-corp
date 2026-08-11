@@ -106,17 +106,23 @@ def make_tasks(task_description: str) -> list[Task]:
         Упакуй готовое решение в Docker.
 
         ЧТО СДЕЛАТЬ:
-        1. **Dockerfile**: multi-stage build, используй путь `url-shortener/Dockerfile`
-        2. **docker-compose.yml**: все сервисы, путь `url-shortener/docker-compose.yml`
-        3. **.env.example**: все переменные, путь `url-shortener/.env.example`
-        4. **README.md**: как запустить, путь `url-shortener/README.md`
+        1. **Dockerfile**: multi-stage build, в корне проекта
+        2. **docker-compose.yml**: все сервисы, в корне проекта
+        3. **.env.example**: все переменные, в корне проекта
+        4. **README.md**: как запустить, в корне проекта
         5. **Healthcheck**: для каждого сервиса
+
+        ВАЖНО — Dockerfile:
+        - Копируй ВЕСЬ код приложения (app/, tests/, alembic/ и т.д.)
+        - ОБЯЗАТЕЛЬНО добавь `COPY tests/ ./tests/` — тесты должны быть в образе
+        - Установи pytest и все тестовые зависимости
 
         ПРАВИЛА:
         - Не используй latest-теги — фиксируй версии
         - Не копируй .env в образ
         - Используй не-root пользователя в контейнере
-        - Пути файлов ВСЕГДА начинай с `url-shortener/`, не с `path/to/`
+        - НЕ указывай `version` в docker-compose.yml (Compose V2 не требует)
+        - Все файлы клади в корень, не в подпапки
         """,
         expected_output="Dockerfile, docker-compose.yml, .env.example, README.md — "
                        "каждый в отдельном markdown-блоке с указанием пути.",
