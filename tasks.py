@@ -76,6 +76,12 @@ def make_tasks(task_description: str) -> list[Task]:
         - Используй app.dependency_overrides для подмены БД
         - НЕ пиши код реализации — только тесты
 
+        КРИТИЧНО — ОЖИДАНИЯ ОТ URL:
+        Pydantic HttpUrl автоматически нормализует URL (добавляет trailing slash).
+        Вместо проверки точного равенства original_url используй:
+          assert data["original_url"].rstrip("/") == "https://example.com"
+        Это позволяет тесту пройти с ЛЮБОЙ реализацией (HttpUrl или str).
+
         КРИТИЧНО — НЕЗАВИСИМОСТЬ:
         Ты НЕ ЗНАЕШЬ, какой код напишет Разработчик. Тесты должны быть
         написаны так, чтобы они проходили с ЛЮБОЙ корректной реализацией,
@@ -130,6 +136,23 @@ def make_tasks(task_description: str) -> list[Task]:
         - ЗАПРЕЩЕНО: глобальные переменные для подключения к БД
         - get_db() должна быть generator function (yield, не return)
         - Тесты подменяют БД через app.dependency_overrides — это работает только с DI
+
+        КРИТИЧНО — ЕДИНОЕ ПРИЛОЖЕНИЕ:
+        - Создавай РОВНО ОДИН файл app/main.py с FastAPI приложением
+        - ВСЕ endpoints определяй в main.py (или подключай роутеры через app.include_router)
+        - ЗАПРЕЩЕНО создавать app/routers/ если main.py их не подключает
+        - Если используешь роутеры — ОБЯЗАТЕЛЬНО: from app.routers import router; app.include_router(router)
+        - ВСЕ endpoints из тестов должны быть доступны: /shorten, /health, /{{short_code}}, /stats/{{short_code}}
+
+        КРИТИЧНО — ТИПЫ URL:
+        - Используй str (не HttpUrl) для поля original_url в response
+        - HttpUrl нормализует URL (добавляет trailing slash) — это ломает тесты
+        - Для request model используй str с валидацией вручную, или HttpUrl но response возвращай str
+
+        КРИТИЧНО — СТАТУС РЕДИРЕКТА:
+        - Для redirect endpoint используй status_code=307 (Temporary Redirect)
+        - 302 Found семантически неверен для временного редиректа
+        - RedirectResponse по умолчанию использует 307 — не переопределяй на 302
 
         КАЧЕСТВО:
         - Типизация (type hints) на всех публичных функциях
@@ -188,9 +211,13 @@ def make_tasks(task_description: str) -> list[Task]:
         - Если тест требует поле 'short_code' — возвращай 'short_code'
         - Если тест падает с KeyError — проверь, что возвращаешь все поля из теста
         - Если тест падает с 500 — проверь, что БД инициализирована через DI
+        - Если тест падает с 404 на /health — добавь endpoint /health в app/main.py
+        - Если тест падает с trailing slash ('https://example.com/' vs 'https://example.com') — используй str вместо HttpUrl
+        - Если тест падает с 302 vs 307 — используй status_code=307 для redirect
         - НЕ переписывай код с нуля — точечные правки
         - Верни ПОЛНУЮ кодовую базу (все файлы), а не только исправленные
         - В поле content первого файла добавь комментарий с перечнем исправлений
+        - КРИТИЧНО: НЕ изменяй тесты, НЕ добавляй новые тесты, НЕ удаляй существующие
         """,
         expected_output="JSON с полем files — полная кодовая база с исправлениями (тесты не тронуты).",
         agent=developer,
