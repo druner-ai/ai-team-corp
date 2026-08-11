@@ -174,11 +174,10 @@ def make_tasks(task_description: str) -> list[Task]:
 
         КРИТИЧНО — PYTHONPATH:
         В корне проекта ДОЛЖЕН быть pytest.ini или conftest.py с настройкой pythonpath.
-        Пример pytest.ini:
+        ПРАВИЛЬНЫЙ формат pytest.ini (секция [pytest], не [tool:pytest]):
         [pytest]
         pythonpath = .
-        Или conftest.py в корне:
-        import sys; sys.path.insert(0, '.')
+        testpaths = tests
         Без этого pytest не найдёт модули app/ в CI.
 
         КРИТИЧНО — ЗАВИСИМОСТИ ДЛЯ ТЕСТОВ:
