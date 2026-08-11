@@ -1,0 +1,85 @@
+"""
+Тесты для endpoint'а GET /health.
+"""
+from unittest.mock import patch
+from fastapi.testclient import TestClient
+from fastapi import FastAPI
+from app.main import SecurityHeadersMiddleware
+
+
+def test_health_returns_200(client: TestClient) -> None:
+    """
+    Проверяет, что endpoint возвращает статус 200.
+    """
+    response = client.get("/health")
+    assert response.status_code == 200
+
+
+def test_health_response_schema(client: TestClient) -> None:
+    """
+    Проверяет структуру JSON-ответа.
+    """
+    response = client.get("/health")
+    data = response.json()
+    assert data["status"] == "healthy"
+    assert isinstance(data["uptime_seconds"], float)
+    assert isinstance(data["version"], str)
+
+
+def test_health_uptime_increases(client: TestClient) -> None:
+    """
+    Проверяет, что uptime увеличивается между запросами.
+    """
+    r1 = client.get("/health").json()
+    r2 = client.get("/health").json()
+    assert r2["uptime_seconds"] >= r1["uptime_seconds"]
+
+
+def test_root_redirects_to_docs(client: TestClient) -> None:
+    """
+    Проверяет, что корневой путь редиректит на /docs (в dev-окружении).
+    """
+    response = client.get("/", follow_redirects=False)
+    # В тестовом окружении ENVIRONMENT=development, поэтому docs включены
+    assert response.status_code == 307
+    assert response.headers["location"] == "/docs"
+
+
+def test_security_headers(client: TestClient) -> None:
+    """
+    Проверяет наличие заголовков безопасности.
+    """
+    response = client.get("/health")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_health_handles_exception(client: TestClient) -> None:
+    """
+    Проверяет, что при возникновении исключения в health endpoint возвращается 500.
+    """
+    with patch("app.routers.health.time.time", side_effect=Exception("Test error")):
+        response = client.get("/health")
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Internal server error"
+
+
+def test_middleware_handles_exception() -> None:
+    """
+    Проверяет, что middleware возвращает 500 с заголовками безопасности при исключении.
+    """
+    test_app = FastAPI()
+    test_app.add_middleware(SecurityHeadersMiddleware)
+
+    @test_app.get("/error")
+    async def error_route():
+        raise ValueError("Test error")
+
+    client = TestClient(test_app)
+    response = client.get("/error")
+    assert response.status_code == 500
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json()["detail"] == "Internal server error"
