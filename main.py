@@ -179,6 +179,9 @@ def _extract_files(text: str, run_dir: Path) -> dict[str, Path]:
         skip_labels = {"python", "dockerfile", "yaml", "json", "markdown", "bash", "text", "sql", "sh"}
         if filepath in skip_labels:
             continue
+        # Пропускаем однобуквенные имена и JSON-артефакты
+        if len(filepath) <= 2 or filepath in "[]{}":
+            continue
         if len(content) < 20:
             continue
 
