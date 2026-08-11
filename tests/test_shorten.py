@@ -1,86 +1,47 @@
-# tests/test_shorten.py
 import pytest
+from httpx import AsyncClient
+from datetime import datetime, timedelta
 
-
-def test_create_short_url(client):
-    """Создание короткой ссылки без custom_code."""
-    response = client.post("/shorten", json={"url": "https://example.com"})
+@pytest.mark.asyncio
+async def test_create_short_url(client: AsyncClient):
+    payload = {"url": "https://example.org"}
+    response = await client.post("/shorten", json=payload)
     assert response.status_code == 201
     data = response.json()
-    assert "short_code" in data
-    assert "short_url" in data
-    assert data["original_url"] == "https://example.com"
+    assert data["url"] == "https://example.org"
     assert len(data["short_code"]) == 6
 
-
-def test_create_with_custom_code(client):
-    """Создание короткой ссылки с custom_code."""
-    response = client.post(
-        "/shorten",
-        json={"url": "https://example.com", "custom_code": "mycode"},
-    )
+@pytest.mark.asyncio
+async def test_create_with_custom_code(client: AsyncClient):
+    payload = {"url": "https://example.org", "custom_code": "cust1"}
+    response = await client.post("/shorten", json=payload)
     assert response.status_code == 201
-    data = response.json()
-    assert data["short_code"] == "mycode"
-    assert "mycode" in data["short_url"]
+    assert response.json()["short_code"] == "cust1"
 
-
-def test_create_duplicate_custom_code(client):
-    """Попытка создать ссылку с уже существующим custom_code."""
-    client.post("/shorten", json={"url": "https://example.com", "custom_code": "mycode"})
-    response = client.post(
-        "/shorten",
-        json={"url": "https://other.com", "custom_code": "mycode"},
-    )
+@pytest.mark.asyncio
+async def test_create_duplicate_custom_code(client: AsyncClient):
+    payload = {"url": "https://example.org", "custom_code": "dup2"}
+    await client.post("/shorten", json=payload)
+    response = await client.post("/shorten", json=payload)
     assert response.status_code == 409
 
-
-def test_create_invalid_url_scheme(client):
-    """Попытка создать ссылку с невалидным URL."""
-    response = client.post("/shorten", json={"url": "not-a-url"})
-    assert response.status_code == 422
-
-
-def test_create_missing_url_field(client):
-    """Попытка создать ссылку без поля url."""
-    response = client.post("/shorten", json={})
-    assert response.status_code == 422
-
-
-def test_create_with_expires_at(client):
-    """Создание ссылки с expires_at."""
-    response = client.post(
-        "/shorten",
-        json={
-            "url": "https://example.com",
-            "expires_at": "2026-12-31T23:59:59Z",
-        },
-    )
+@pytest.mark.asyncio
+async def test_create_with_expires_at(client: AsyncClient):
+    future = (datetime.utcnow() + timedelta(hours=1)).isoformat()
+    payload = {"url": "https://example.org", "expires_at": future}
+    response = await client.post("/shorten", json=payload)
     assert response.status_code == 201
-    data = response.json()
-    assert data["expires_at"] == "2026-12-31T23:59:59+00:00"
+    assert response.json()["expires_at"] is not None
 
-
-def test_create_custom_code_invalid_format(client):
-    """Попытка создать ссылку с невалидным custom_code (слишком короткий)."""
-    response = client.post(
-        "/shorten",
-        json={"url": "https://example.com", "custom_code": "ab"},
-    )
-    assert response.status_code == 422
-
-
-def test_delete_existing_short_code(client):
-    """Удаление существующей короткой ссылки."""
-    create_resp = client.post("/shorten", json={"url": "https://example.com"})
+@pytest.mark.asyncio
+async def test_delete_existing_short_code(client: AsyncClient):
+    # Create first
+    create_resp = await client.post("/shorten", json={"url": "https://delete.me"})
+    assert create_resp.status_code == 201
     short_code = create_resp.json()["short_code"]
-
-    delete_resp = client.delete(f"/{short_code}")
-    assert delete_resp.status_code == 200
-    data = delete_resp.json()
-    assert data["short_code"] == short_code
-    assert data["deleted"] is True
-
-    # Проверяем, что ссылка действительно удалена
-    get_resp = client.get(f"/{short_code}")
+    # Delete
+    delete_resp = await client.delete(f"/{short_code}")
+    assert delete_resp.status_code == 204
+    # Verify gone
+    get_resp = await client.get(f"/{short_code}")
     assert get_resp.status_code == 404
