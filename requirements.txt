@@ -1,0 +1,7 @@
+# QA Fixes: Added try-except in app/routers/redirect.py to handle exceptions from resolve_and_track. Existing checks for expiration, active status, and existence are already present in the router and service layer.
+fastapi>=0.110.0
+uvicorn>=0.27.0
+aiosqlite>=0.19.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
