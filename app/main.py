@@ -1,15 +1,18 @@
+"""
+FastAPI application entry point.
+"""
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from app.routers import urls, redirect, stats
-from app.database import init_db
-
-app = FastAPI()
+from app.database import init_db, close_db
+from app.routes import router
 
 
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     await init_db()
+    yield
+    await close_db()
 
 
-app.include_router(urls.router)
-app.include_router(redirect.router)
-app.include_router(stats.router)
+app = FastAPI(title="URL Shortener", lifespan=lifespan)
+app.include_router(router)

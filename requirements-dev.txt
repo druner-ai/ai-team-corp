@@ -1,4 +1,4 @@
-pytest==8.0.0
+# requirements-dev.txt
+# Fixed httpx version conflict: changed httpx==0.26.0 to httpx==0.27.0 to match requirements.txt
 pytest-asyncio==0.23.3
-httpx==0.26.0
-aiosqlite==0.19.0
+httpx==0.27.0
