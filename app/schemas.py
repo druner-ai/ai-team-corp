@@ -1,6 +1,6 @@
 from pydantic import BaseModel, HttpUrl
-from datetime import datetime
 from typing import Optional
+from datetime import datetime
 
 
 class ShortenRequest(BaseModel):
@@ -10,13 +10,24 @@ class ShortenRequest(BaseModel):
 class ShortenResponse(BaseModel):
     short_code: str
     short_url: str
+    original_url: str
+
+
+class RefererStat(BaseModel):
+    referer: str
+    count: int
+
+
+class UserAgentStat(BaseModel):
+    user_agent: str
+    count: int
 
 
 class StatsResponse(BaseModel):
     short_code: str
     original_url: str
     created_at: datetime
-    clicks: int
-    last_clicked_at: Optional[datetime] = None
-    top_referers: list[tuple[str, int]] = []
-    top_user_agents: list[tuple[str, int]] = []
+    click_count: int
+    last_click: Optional[datetime] = None
+    top_referers: list[RefererStat]
+    top_user_agents: list[UserAgentStat]
