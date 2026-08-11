@@ -1,0 +1,117 @@
+"""
+Repository layer for URL and click data access.
+
+All SQL queries use parameterized statements to prevent SQL injection.
+"""
+
+import logging
+from typing import Any
+
+import aiosqlite
+from fastapi import Depends
+
+from app.database import get_connection
+
+logger = logging.getLogger(__name__)
+
+
+class UrlRepository:
+    """
+    Data access object for urls and clicks tables.
+
+    Provides methods for CRUD operations using raw SQL via aiosqlite.
+    """
+
+    def __init__(self, connection: aiosqlite.Connection) -> None:
+        """
+        Initialize the repository with a database connection.
+
+        Args:
+            connection: An active aiosqlite connection.
+        """
+        self._conn = connection
+
+    async def find_by_code(self, code: str) -> dict[str, Any] | None:
+        """
+        Find a URL record by its short code.
+
+        Args:
+            code: The short code to look up.
+
+        Returns:
+            A dictionary representing the row, or None if not found.
+        """
+        cursor = await self._conn.execute(
+            "SELECT id, code, original_url, created_at, clicks FROM urls WHERE code = ?",
+            (code,),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None:
+            return None
+        return dict(row)
+
+    async def insert_url(self, code: str, original_url: str, created_at: str) -> None:
+        """
+        Insert a new shortened URL record.
+
+        Args:
+            code: The generated short code.
+            original_url: The original long URL.
+            created_at: ISO 8601 timestamp.
+        """
+        await self._conn.execute(
+            "INSERT INTO urls (code, original_url, created_at) VALUES (?, ?, ?)",
+            (code, original_url, created_at),
+        )
+        await self._conn.commit()
+
+    async def increment_clicks(self, code: str) -> None:
+        """
+        Atomically increment the click counter for a given short code.
+
+        Args:
+            code: The short code.
+        """
+        await self._conn.execute(
+            "UPDATE urls SET clicks = clicks + 1 WHERE code = ?",
+            (code,),
+        )
+        await self._conn.commit()
+
+    async def insert_click(
+        self,
+        url_id: int,
+        clicked_at: str,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> None:
+        """
+        Record a click event in the clicks table.
+
+        Args:
+            url_id: Foreign key referencing urls.id.
+            clicked_at: ISO 8601 timestamp of the click.
+            ip_address: Client IP address (optional).
+            user_agent: Client User-Agent header (optional).
+        """
+        await self._conn.execute(
+            "INSERT INTO clicks (url_id, clicked_at, ip_address, user_agent) VALUES (?, ?, ?, ?)",
+            (url_id, clicked_at, ip_address, user_agent),
+        )
+        await self._conn.commit()
+
+
+async def get_url_repository(
+    connection: aiosqlite.Connection = Depends(get_connection),
+) -> UrlRepository:
+    """
+    FastAPI dependency that provides a UrlRepository instance.
+
+    Args:
+        connection: Injected database connection.
+
+    Returns:
+        Configured UrlRepository.
+    """
+    return UrlRepository(connection)

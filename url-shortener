@@ -1,0 +1,31 @@
+├── app/
+│   ├── __init__.py
+│   ├── main.py                 # Точка входа, создание FastAPI-приложения, lifespan
+│   ├── config.py               # Конфигурация (путь к БД, базовый URL, длина кода)
+│   ├── database.py             # Инициализация БД, выполнение SQL-запросов
+│   ├── models/
+│   │   ├── __init__.py
+│   │   └── schemas.py          # Pydantic-схемы (ShortenRequest, ShortenResponse, StatsResponse)
+│   ├── routers/
+│   │   ├── __init__.py
+│   │   ├── shorten.py          # POST /shorten
+│   │   ├── redirect.py         # GET /{code}
+│   │   ├── stats.py            # GET /stats/{code}
+│   │   └── health.py           # GET /health
+│   ├── services/
+│   │   ├── __init__.py
+│   │   └── url_service.py      # Бизнес-логика: генерация кода, создание, редирект, статистика
+│   ├── repositories/
+│   │   ├── __init__.py
+│   │   └── url_repository.py   # SQL-запросы: insert, find_by_code, increment_clicks, insert_click
+│   └── utils/
+│       ├── __init__.py
+│       └── code_generator.py   # Генерация случайного короткого кода
+├── tests/
+│   ├── __init__.py
+│   ├── test_shorten.py
+│   ├── test_redirect.py
+│   └── test_stats.py
+├── requirements.txt            # fastapi, uvicorn, aiosqlite, pydantic
+├── README.md
+└── .gitignore

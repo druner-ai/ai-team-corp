@@ -1,0 +1,65 @@
+"""
+Tests for GET /{code} redirect endpoint.
+"""
+
+import logging
+
+import pytest
+from httpx import AsyncClient
+
+logger = logging.getLogger(__name__)
+
+
+@pytest.mark.anyio
+async def test_redirect_success(client: AsyncClient):
+    """Test that a valid short code redirects to the original URL."""
+    try:
+        # First, create a short URL
+        create_resp = await client.post(
+            "/shorten",
+            json={"url": "https://example.com/target"},
+        )
+        code = create_resp.json()["code"]
+
+        # Then, follow the redirect (disable auto-redirect to inspect headers)
+        response = await client.get(f"/{code}", follow_redirects=False)
+        assert response.status_code == 307
+        assert response.headers["location"] == "https://example.com/target"
+    except Exception as e:
+        logger.error("Test failed: %s", e)
+        raise
+
+
+@pytest.mark.anyio
+async def test_redirect_not_found(client: AsyncClient):
+    """Test that a non-existent code returns 404."""
+    try:
+        response = await client.get("/nonexistent", follow_redirects=False)
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Short URL not found."
+    except Exception as e:
+        logger.error("Test failed: %s", e)
+        raise
+
+
+@pytest.mark.anyio
+async def test_redirect_increments_clicks(client: AsyncClient):
+    """Test that each redirect increments the click counter."""
+    try:
+        create_resp = await client.post(
+            "/shorten",
+            json={"url": "https://example.com/count-clicks"},
+        )
+        code = create_resp.json()["code"]
+
+        # Perform two redirects
+        await client.get(f"/{code}", follow_redirects=False)
+        await client.get(f"/{code}", follow_redirects=False)
+
+        # Check stats
+        stats_resp = await client.get(f"/stats/{code}")
+        assert stats_resp.status_code == 200
+        assert stats_resp.json()["clicks"] == 2
+    except Exception as e:
+        logger.error("Test failed: %s", e)
+        raise

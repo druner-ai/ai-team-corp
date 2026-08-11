@@ -1,0 +1,49 @@
+"""
+Router for POST /shorten endpoint.
+"""
+
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from app.models.schemas import ShortenRequest, ShortenResponse
+from app.services.url_service import UrlService, get_url_service
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["shorten"])
+
+
+@router.post(
+    "/shorten",
+    response_model=ShortenResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a short URL",
+    description="Takes a long URL and returns a shortened version with a unique code.",
+)
+async def create_short_url(
+    body: ShortenRequest,
+    service: UrlService = Depends(get_url_service),
+) -> ShortenResponse:
+    """
+    Create a new short URL.
+
+    Args:
+        body: Validated request body containing the original URL.
+        service: Injected URL service.
+
+    Returns:
+        ShortenResponse with the generated code and short URL.
+
+    Raises:
+        HTTPException 500: If code generation fails after max attempts.
+    """
+    try:
+        result = await service.create_short_url(str(body.url))
+        return ShortenResponse(**result)
+    except RuntimeError as exc:
+        logger.error("Failed to create short URL: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not generate a unique code. Please try again.",
+        ) from exc

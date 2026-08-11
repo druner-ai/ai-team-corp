@@ -1,0 +1,2 @@
+# URL Shortener Application
+# QA Fixes: Added try-except error handling in database.py, url_repository.py, url_service.py, routers, main.py, and test files as per QA report (priority 🟡).

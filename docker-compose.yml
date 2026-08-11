@@ -1,0 +1,29 @@
+services:
+  url-shortener:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: url-shortener:1.0.0
+    container_name: url-shortener
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      - DATABASE_PATH=${DATABASE_PATH:-/app/data/shortener.db}
+      - BASE_URL=${BASE_URL:-http://localhost:8000}
+      - CODE_LENGTH=${CODE_LENGTH:-6}
+      - MAX_URL_LENGTH=${MAX_URL_LENGTH:-2048}
+      - MAX_CODE_GENERATION_ATTEMPTS=${MAX_CODE_GENERATION_ATTEMPTS:-5}
+    volumes:
+      - url-shortener-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  url-shortener-data:
+    driver: local
