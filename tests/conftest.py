@@ -1,52 +1,48 @@
+# Исправлено: добавлена фикстура для инициализации тестовой БД в памяти
+# Это решает проблему 'no such table: urls' и KeyError: 'slug' в тестах
+
+import asyncio
+from typing import AsyncGenerator
+
 import pytest
-import aiosqlite
-from httpx import AsyncClient
+import pytest_asyncio
+from httpx import AsyncClient, ASGITransport
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+
+from app.database import Base, get_session
 from app.main import app
-from app.database import get_db, SQL_SCHEMA_FILE
+
+# Используем in-memory SQLite для тестов
+TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+
+test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+test_async_session = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
 
 
-@pytest.fixture(scope="function")
-async def async_client():
-    """
-    Provide an httpx AsyncClient backed by the FastAPI app with an in-memory
-    SQLite database (shared cache). Each test uses a fresh schema.
-    """
-    db_uri = "file::memory:?cache=shared"
+@pytest_asyncio.fixture(scope="function")
+async def session() -> AsyncGenerator[AsyncSession, None]:
+    """Создаёт новую сессию для каждого теста."""
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
-    # Seed the shared in-memory database with the schema
-    setup_conn = await aiosqlite.connect(db_uri, uri=True)
-    await setup_conn.execute("PRAGMA journal_mode=WAL;")
-    await setup_conn.execute("PRAGMA foreign_keys=ON;")
-    with open(SQL_SCHEMA_FILE, 'r') as f:
-        schema = f.read()
-    await setup_conn.executescript(schema)
-    await setup_conn.commit()
-    await setup_conn.close()
+    async with test_async_session() as session:
+        yield session
 
-    async def override_get_db():
-        conn = await aiosqlite.connect(db_uri, uri=True)
-        try:
-            yield conn
-        finally:
-            await conn.close()
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
 
-    # Monkey‑patch database.get_connection so background tasks also use the shared DB
-    import app.database as database_module
-    original_get_connection = database_module.get_connection
 
-    async def override_get_connection():
-        conn = await aiosqlite.connect(db_uri, uri=True)
-        await conn.execute("PRAGMA journal_mode=WAL;")
-        await conn.execute("PRAGMA foreign_keys=ON;")
-        return conn
+@pytest_asyncio.fixture(scope="function")
+async def client(session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
+    """Создаёт тестовый HTTP-клиент с переопределённой зависимостью сессии."""
 
-    database_module.get_connection = override_get_connection
+    async def override_get_session():
+        yield session
 
-    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_session] = override_get_session
 
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        yield client
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
 
-    # Clean up
     app.dependency_overrides.clear()
-    database_module.get_connection = original_get_connection

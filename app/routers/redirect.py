@@ -1,39 +1,29 @@
-from fastapi import APIRouter, Request, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
-from app.database import get_db
-from app.services.url_service import UrlService
-from app.services.stats_service import StatsService
-from app.repositories.url_repository import UrlRepository
-from app.repositories.stats_repository import StatsRepository
+from sqlalchemy.ext.asyncio import AsyncSession
 
-router = APIRouter(prefix="/r", tags=["Redirect"])
+from app.database import get_session
+from app.services.url_service import URLService
+from app.services.click_service import ClickService
+
+router = APIRouter()
 
 
 @router.get("/{slug}")
-async def redirect(
+async def redirect_to_url(
     slug: str,
     request: Request,
-    background_tasks: BackgroundTasks,
-    conn=Depends(get_db),
+    session: AsyncSession = Depends(get_session),
+    url_svc: URLService = Depends(URLService),
+    click_svc: ClickService = Depends(ClickService),
 ):
-    """Look up a slug and issue a 302 redirect. Records the click asynchronously."""
-    url_svc = UrlService(UrlRepository())
-    url_data = await url_svc.get_active_url(conn, slug)
-    if url_data is None:
-        raise HTTPException(status_code=404, detail="URL not found")
+    """Перенаправляет на оригинальный URL и записывает клик."""
+    url_data = await url_svc.get_url(session, slug)
+    if not url_data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="URL not found")
 
-    target_url = url_data["original_url"]
+    # Записываем клик
+    client_ip = request.client.host if request.client else None
+    await click_svc.record_click(session, slug, client_ip)
 
-    # Extract client information for statistics
-    ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-    if not ip and request.client:
-        ip = request.client.host
-    user_agent = request.headers.get("User-Agent")
-    referer = request.headers.get("Referer")
-
-    stats_svc = StatsService(UrlRepository(), StatsRepository())
-    background_tasks.add_task(
-        stats_svc.record_click_background, slug, ip, user_agent, referer
-    )
-
-    return RedirectResponse(url=target_url, status_code=302)
+    return RedirectResponse(url=url_data["original_url"], status_code=status.HTTP_302_FOUND)

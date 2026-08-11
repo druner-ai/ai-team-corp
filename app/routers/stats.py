@@ -1,29 +1,45 @@
-from fastapi import APIRouter, Depends, HTTPException
-from app.database import get_db
-from app.config import settings
-from app.schemas.stats import StatsResponse, ClickInfo
-from app.services.stats_service import StatsService, UrlNotFoundForStats
-from app.repositories.url_repository import UrlRepository
-from app.repositories.stats_repository import StatsRepository
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_session
+from app.services.url_service import URLService
+from app.services.click_service import ClickService
 
 router = APIRouter()
 
 
-@router.get("/urls/{slug}/stats", response_model=StatsResponse)
-async def get_stats(slug: str, conn=Depends(get_db)):
-    """Return click statistics for a given slug."""
-    svc = StatsService(UrlRepository(), StatsRepository())
-    try:
-        stats_data = await svc.get_url_stats(conn, slug, settings.max_recent_clicks)
-    except UrlNotFoundForStats as e:
-        raise HTTPException(status_code=404, detail=str(e))
+class ClickDetail(BaseModel):
+    clicked_at: str
+    ip_address: str | None
 
-    url_data = stats_data["url_data"]
-    recent_clicks = [ClickInfo(**click) for click in stats_data["recent_clicks"]]
-    return StatsResponse(
-        slug=url_data["slug"],
-        original_url=url_data["original_url"],
-        created_at=url_data["created_at"],
-        total_clicks=stats_data["total_clicks"],
-        recent_clicks=recent_clicks,
-    )
+
+class StatsResponse(BaseModel):
+    slug: str
+    original_url: str
+    created_at: str
+    total_clicks: int
+    clicks: list[ClickDetail]
+
+
+@router.get("/stats/{slug}", response_model=StatsResponse)
+async def get_stats(
+    slug: str,
+    session: AsyncSession = Depends(get_session),
+    url_svc: URLService = Depends(URLService),
+    click_svc: ClickService = Depends(ClickService),
+):
+    """Возвращает статистику переходов по slug."""
+    url_data = await url_svc.get_url(session, slug)
+    if not url_data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="URL not found")
+
+    stats = await click_svc.get_stats(session, slug)
+
+    return {
+        "slug": slug,
+        "original_url": url_data["original_url"],
+        "created_at": url_data["created_at"],
+        "total_clicks": stats["total_clicks"],
+        "clicks": stats["clicks"],
+    }

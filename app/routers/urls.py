@@ -1,47 +1,50 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from app.database import get_db
-from app.schemas.url import CreateUrlRequest, UrlResponse
-from app.services.url_service import (
-    UrlService,
-    InvalidURLException,
-    SlugAlreadyExistsException,
-    MaxCollisionRetriesExceeded,
-)
-from app.repositories.url_repository import UrlRepository
-from app.config import settings
+from pydantic import BaseModel, HttpUrl, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_session
+from app.services.url_service import URLService
 
 router = APIRouter()
 
 
-@router.post("/urls", response_model=UrlResponse, status_code=201)
-async def create_url(req: CreateUrlRequest, conn=Depends(get_db)):
-    """Create a new short URL, optionally with a custom slug."""
-    svc = UrlService(UrlRepository())
+class URLCreateRequest(BaseModel):
+    original_url: HttpUrl
+    custom_slug: str | None = Field(None, max_length=50, pattern=r'^[a-zA-Z0-9_-]+$')
+
+
+class URLResponse(BaseModel):
+    slug: str
+    original_url: str
+    short_url: str
+    created_at: str
+
+
+@router.post("/urls", response_model=URLResponse, status_code=status.HTTP_201_CREATED)
+async def create_url(
+    request: URLCreateRequest,
+    session: AsyncSession = Depends(get_session),
+    svc: URLService = Depends(URLService),
+):
+    """Создаёт короткую ссылку."""
     try:
-        url_data = await svc.create_url(conn, req.original_url, req.custom_slug)
-    except InvalidURLException as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except SlugAlreadyExistsException as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except MaxCollisionRetriesExceeded:
-        raise HTTPException(status_code=500, detail="Internal error generating slug")
-    except Exception:
-        raise HTTPException(status_code=500, detail="Unexpected error")
-
-    short_url = f"{settings.base_url}/r/{url_data['slug']}"
-    return UrlResponse(
-        slug=url_data["slug"],
-        short_url=short_url,
-        original_url=url_data["original_url"],
-        created_at=url_data["created_at"],
-    )
+        result = await svc.create_url(
+            session,
+            original_url=str(request.original_url),
+            custom_slug=request.custom_slug,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
-@router.delete("/urls/{slug}", status_code=204)
-async def delete_url(slug: str, conn=Depends(get_db)):
-    """Soft-delete (deactivate) a URL by its slug."""
-    svc = UrlService(UrlRepository())
-    deactivated = await svc.deactivate_url(conn, slug)
+@router.delete("/urls/{slug}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_url(
+    slug: str,
+    session: AsyncSession = Depends(get_session),
+    svc: URLService = Depends(URLService),
+):
+    """Деактивирует короткую ссылку."""
+    deactivated = await svc.deactivate_url(session, slug)
     if not deactivated:
-        raise HTTPException(status_code=404, detail="Slug not found")
-    return None
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="URL not found")
