@@ -156,12 +156,13 @@ def make_tasks(task_description: str) -> list[Task]:
         Верни JSON с полем files — массив объектов с path и content.
         Пример: {{"files": [{{"path": "Dockerfile", "content": "FROM python:3.11..."}}]}}
 
-        ЧТО СДЕЛАТЬ:
+        ЧТО СДЕЛАТЬ (только инфраструктура, код уже есть):
         - Dockerfile (multi-stage build)
         - docker-compose.yml (все сервисы)
-        - .env.example (все переменные)
-        - README.md (как запустить)
         - .github/workflows/ci.yml (GitHub Actions CI/CD)
+
+        НЕ генерируй: README.md, .env.example, .gitignore — они уже есть от Разработчика.
+        Сфокусируйся только на Docker и CI.
 
         ВАЖНО — CI/CD (.github/workflows/ci.yml):
         - actions/setup-python@v5, python 3.12
