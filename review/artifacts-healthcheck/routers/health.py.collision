@@ -1,0 +1,32 @@
+"""
+Обработчик endpoint'а health check.
+"""
+import time
+from fastapi import APIRouter, HTTPException
+from app.schemas import HealthResponse
+from app.config import VERSION
+
+router = APIRouter()
+
+# Время старта приложения (Unix timestamp)
+START_TIME: float = time.time()
+
+
+@router.get("/health", response_model=HealthResponse)
+async def health_check() -> HealthResponse:
+    """
+    Возвращает текущий статус сервиса, время работы и версию.
+
+    Returns:
+        HealthResponse: объект с полями status, uptime_seconds, version.
+    """
+    try:
+        uptime = round(time.time() - START_TIME, 2)
+        return HealthResponse(
+            status="healthy",
+            uptime_seconds=uptime,
+            version=VERSION,
+        )
+    except Exception as e:
+        # Логирование ошибки и возврат 500
+        raise HTTPException(status_code=500, detail="Internal server error") from e

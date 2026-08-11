@@ -57,16 +57,10 @@ def make_tasks(task_description: str) -> list[Task]:
         - Примеры НЕПРАВИЛЬНЫХ: "app" (нет расширения), "notes_api" (нет расширения)
 
         ТРЕБОВАНИЯ К КОДУ:
-        - Включай requirements.txt (все runtime-зависимости)
-        - Включай requirements-dev.txt (все test-зависимости: pytest, httpx, pytest-asyncio, aiosqlite и т.д.)
+        - Включай requirements.txt или pyproject.toml
         - Включай тесты (pytest)
         - Включай .env.example
         - Если в архитектурном документе есть неясности — отметь в комментариях кода
-
-        КРИТИЧНО — ЗАВИСИМОСТИ ДЛЯ ТЕСТОВ:
-        Все библиотеки, которые импортируются в tests/ (httpx, pytest-asyncio, aiosqlite,
-        freezegun и т.д.), ДОЛЖНЫ быть в requirements-dev.txt. DevOps будет использовать
-        этот файл для CI. Если тест импортирует модуль — он должен быть установлен.
 
         КАЧЕСТВО:
         - Типизация (type hints) на всех публичных функциях
@@ -126,24 +120,8 @@ def make_tasks(task_description: str) -> list[Task]:
         output_pydantic=CodeOutput,
     )
 
-    # Дублируем тестовые зависимости в requirements-dev.txt для CI
-    # (Dockerfile и docker-compose не используются в CI, но должны быть консистентны)
-    devops_context = """
-    Предыдущие этапы завершены. Архитектура, код и тесты написаны.
-    Тебе нужно упаковать решение в Docker и настроить CI/CD.
-
-    ИНФОРМАЦИЯ О ЗАВИСИМОСТЯХ:
-    Разработчик должен был создать requirements.txt и requirements-dev.txt.
-    Если requirements-dev.txt отсутствует — СОЗДАЙ его, прочитав все импорты в tests/.
-    Типичные test-зависимости: pytest, httpx, pytest-asyncio, aiosqlite, freezegun.
-
-    В CI (.github/workflows/ci.yml) устанавливай ОБА:
-    pip install -r requirements.txt -r requirements-dev.txt
-    """
-
     docker_task = Task(
-        description=f"""{devops_context}
-
+        description="""
         Упакуй готовое решение в Docker и настрой CI/CD.
 
         ВАЖНО — ФОРМАТ ОТВЕТА:
@@ -159,17 +137,11 @@ def make_tasks(task_description: str) -> list[Task]:
 
         ВАЖНО — CI/CD (.github/workflows/ci.yml):
         - actions/setup-python@v5, python 3.12
-        - Установка: python -m venv .venv && pip install -r requirements.txt && pip install -r requirements-dev.txt
+        - Установка: python -m venv .venv && pip install -r requirements.txt && pip install pytest
         - Тесты: .venv/bin/pytest tests/ -v --tb=short
         - БЕЗ || true — тесты должны падать честно
         - Триггеры: push на master и ai-team/**, pull_request на master
         - Добавь build job: docker build если есть Dockerfile
-
-        КРИТИЧНО — ЗАВИСИМОСТИ ДЛЯ ТЕСТОВ:
-        Разработчик ДОЛЖЕН был создать requirements-dev.txt со всеми test-зависимостями.
-        Если его нет — СОЗДАЙ сам, прочитав все импорты в tests/. Типичные: pytest, httpx,
-        pytest-asyncio, aiosqlite. В CI устанавливай ОБА файла: -r requirements.txt -r requirements-dev.txt.
-        Если тест импортирует модуль, которого нет ни в одном requirements — CI упадёт.
 
         ВАЖНО — Dockerfile:
         - Копируй ВЕСЬ код приложения (app/, tests/, и т.д.)

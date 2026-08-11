@@ -36,25 +36,17 @@ from tasks import make_tasks
 # ─── global state ─────────────────────────────────────────────
 
 _all_outputs: list[tuple[str, str, str, dict]] = []  # (task_name, agent_role, raw_output, json_dict)
-
-
-def _estimate_cost(tokens_in: int, tokens_out: int) -> float:
-    """Оценка стоимости по усреднённой цене моделей команды.
-
-    CrewAI возвращает суммарные токены без разбивки по агентам,
-    поэтому считаем по средневзвешенной цене всех ролей.
-    """
-    if not tokens_in and not tokens_out:
-        return 0.0
-    avg_in = sum(m["price_per_1m"][0] for m in MODELS.values()) / len(MODELS)
-    avg_out = sum(m["price_per_1m"][1] for m in MODELS.values()) / len(MODELS)
-    return (tokens_in / 1_000_000) * avg_in + (tokens_out / 1_000_000) * avg_out
+_total_cost: float = 0.0
+_total_tokens_in: int = 0
+_total_tokens_out: int = 0
 
 
 # ─── callback: захват вывода каждой задачи ────────────────────
 
 def on_task_complete(output: TaskOutput):
     """Callback — вызывается после каждой завершённой задачи."""
+    global _total_cost, _total_tokens_in, _total_tokens_out
+
     task_name = output.name or "unknown"
     agent_role = str(output.agent) if output.agent else "unknown"
     raw_output = str(output.raw) if output.raw else ""
@@ -63,23 +55,58 @@ def on_task_complete(output: TaskOutput):
     # Сохраняем вывод
     _all_outputs.append((task_name, agent_role, raw_output, json_output))
 
+    # Пытаемся достать token usage из ответа модели
+    usage = json_output.get("usage") or json_output.get("token_usage") or {}
+    tokens_in = usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0)
+    tokens_out = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0)
+
+    if tokens_in or tokens_out:
+        _total_tokens_in += tokens_in
+        _total_tokens_out += tokens_out
+
+        # Определяем модель по роли агента
+        model_key = _role_to_model_key(agent_role)
+        price_in, price_out = MODELS.get(model_key, MODELS["developer"])["price_per_1m"]
+        cost = (tokens_in / 1_000_000) * price_in + (tokens_out / 1_000_000) * price_out
+        _total_cost += cost
+
+    # Считаем по символам если API не вернул usage
+    else:
+        est_tokens_in = len(task_name) // 4
+        est_tokens_out = len(raw_output) // 4
+        _total_tokens_in += est_tokens_in
+        _total_tokens_out += est_tokens_out
+
+        # Считаем стоимость по оценке
+        model_key = _role_to_model_key(agent_role)
+        price_in, price_out = MODELS.get(model_key, MODELS["developer"])["price_per_1m"]
+        cost = (est_tokens_in / 1_000_000) * price_in + (est_tokens_out / 1_000_000) * price_out
+        _total_cost += cost
+
+
+def _role_to_model_key(role: str) -> str:
+    role_lower = role.lower()
+    if "архитект" in role_lower:
+        return "architect"
+    elif "разработ" in role_lower:
+        return "developer"
+    elif "qa" in role_lower:
+        return "qa"
+    elif "devops" in role_lower:
+        return "devops"
+    return "developer"
+
+
+# ─── artifact saver ────────────────────────────────────────────
 
 def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool = False) -> Path | None:
-    """Безопасно записать файл, обрабатывая коллизии имён и path traversal."""
+    """Безопасно записать файл, обрабатывая коллизии имён."""
     # Нормализуем путь
     if filepath.startswith("path/to/"):
         filepath = filepath.replace("path/to/", "", 1)
     filepath = filepath.strip("`*\"'")
 
-    # Path traversal guard — отклоняем абсолютные пути и выход за run_dir
-    p = Path(filepath)
-    if p.is_absolute():
-        return None
-    full_path = (run_dir / filepath).resolve()
-    try:
-        full_path.relative_to(run_dir.resolve())
-    except ValueError:
-        return None
+    full_path = run_dir / filepath
 
     # Пропускаем директории
     if full_path.is_dir():
@@ -178,20 +205,9 @@ def _extract_files(text: str, run_dir: Path) -> dict[str, Path]:
 
 
 def save_all_artifacts(run_dir: Path) -> dict[str, Path]:
-    """Извлечь файлы из выводов задач, которые реально производят файлы."""
+    """Извлечь файлы из ВСЕХ сохранённых выводов задач."""
     all_files = {}
-    # Роли, которые реально производят файлы (не Архитектор, не QA)
-    FILE_PRODUCING_ROLES = {"разработ", "devops"}
-
     for i, (task_name, agent_role, raw_output, json_dict) in enumerate(_all_outputs):
-        role_lower = agent_role.lower()
-        if not any(role in role_lower for role in FILE_PRODUCING_ROLES):
-            # Сохраняем сырой вывод, но не извлекаем файлы
-            task_file = run_dir / f"task_{i:02d}_{agent_role.replace(' ', '_')}.md"
-            task_file.write_text(f"# {agent_role}\n\n## Задача\n{task_name}\n\n## Результат\n\n{raw_output}")
-            all_files[f"task_{i:02d}_{agent_role}.md"] = task_file
-            continue
-
         extracted = _extract_files(raw_output, run_dir)
         all_files.update(extracted)
         # Также сохраняем сырой вывод каждой задачи
@@ -293,17 +309,6 @@ def deploy_and_verify(run_dir: Path) -> str:
         report_lines.append("```")
         if r.returncode != 0:
             report_lines.append(f"\n❌ docker compose up failed (exit {r.returncode})")
-
-            # Сохраняем логи контейнеров для диагностики
-            logs = subprocess.run(
-                "docker compose logs --tail 50 2>&1",
-                shell=True, cwd=str(project_dir),
-                capture_output=True, text=True, timeout=15
-            )
-            if logs.stdout.strip():
-                report_lines.append("\n### 📋 Логи контейнера (последние 50 строк)\n```")
-                report_lines.append(logs.stdout.strip()[:3000])
-                report_lines.append("```")
 
             # Cleanup
             subprocess.run("docker compose down -v 2>/dev/null", shell=True,
@@ -469,35 +474,21 @@ def main():
     duration = time.time() - start_time
     result_str = str(result) if result else ""
 
-    # ── Реальные метрики от CrewAI (UsageMetrics от провайдеров) ──
-    usage = getattr(result, "token_usage", None)
-    if usage is not None:
-        tokens_in = usage.prompt_tokens or 0
-        tokens_out = usage.completion_tokens or 0
-    else:
-        tokens_in = tokens_out = 0
-    cost = _estimate_cost(tokens_in, tokens_out)
-
     # ── Сохраняем артефакты ДО деплоя ──────────────────────────
     saved_files = save_all_artifacts(run_dir)
     final_extracted = _extract_files(result_str, run_dir)
     saved_files.update(final_extracted)
 
     # ── Деплой и верификация (DevOps phase 2) ──────────────────
-    # Бюджет-гейт: если уже перерасход — пропускаем деплой (экономим ресурсы)
     deploy_report = ""
     if status == "✅ Успешно":
-        if cost > MAX_BUDGET_USD:
-            deploy_report = f"⚠️ Деплой пропущен: бюджет превышен (${cost:.4f} > ${MAX_BUDGET_USD:.2f})"
-            print(f"\n⚠️ Бюджет превышен — деплой пропущен")
-        else:
-            deploy_report = deploy_and_verify(run_dir)
+        deploy_report = deploy_and_verify(run_dir)
 
     metrics = {
         "duration": duration,
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
-        "cost": cost,
+        "tokens_in": _total_tokens_in,
+        "tokens_out": _total_tokens_out,
+        "cost": _total_cost,
         "models": ", ".join(f"{k}={v['name'].split('/')[1]}" for k, v in MODELS.items()),
         "status": status,
     }
@@ -509,11 +500,9 @@ def main():
     print(f"{'─' * 54}")
     print(f"  Статус:         {status}")
     print(f"  Время:          {duration:.1f} сек")
-    print(f"  Токенов вход:   {tokens_in:,}")
-    print(f"  Токенов выход:  {tokens_out:,}")
-    print(f"  Цена:           ${cost:.4f}")
-    if cost > MAX_BUDGET_USD:
-        print(f"  ⚠️ БЮДЖЕТ ПРЕВЫШЕН: ${cost:.4f} > ${MAX_BUDGET_USD:.2f}")
+    print(f"  Токенов вход:   {_total_tokens_in:,}")
+    print(f"  Токенов выход:  {_total_tokens_out:,}")
+    print(f"  Цена:           ${_total_cost:.4f}")
     print(f"  Задач собрано:  {len(_all_outputs)}")
     print(f"  Артефактов:     {len(saved_files)} файлов")
     print(f"  Отчёт:          {report_path}")
@@ -531,17 +520,12 @@ def main():
 
 def create_pr_from_run(run_dir: Path, task: str, timestamp: str,
                        metrics: dict | None = None, deploy_report: str = "") -> str | None:
-    """Создать ветку через git worktree, запушить код и открыть PR.
-
-    Использует git worktree вместо stash — не трогает текущее состояние репо.
-    Закрывает старые PR той же задачи (дедупликация).
-    """
+    """Создать ветку, запушить код и открыть PR."""
     import subprocess
     import shutil
 
     branch = f"ai-team/{timestamp}"
     title = task[:80] + ("..." if len(task) > 80 else "")
-    worktree_dir = Path(f"/tmp/ai-team-wt-{timestamp}")
 
     # Собираем статистику
     metrics = metrics or {}
@@ -550,20 +534,15 @@ def create_pr_from_run(run_dir: Path, task: str, timestamp: str,
     test_status = "❌" if "❌" in deploy_report else ("✅" if deploy_report else "—")
     deploy_ok = "✅" if deploy_report and "❌" not in deploy_report else ("❌" if deploy_report else "—")
 
-    # Закрываем старые PR для этой же задачи (дедупликация)
-    _close_stale_prs(task)
-
     try:
-        # 1. Создаём worktree от master (не трогает текущий checkout)
-        r = subprocess.run(
-            ["git", "worktree", "add", "-b", branch, str(worktree_dir), "master"],
-            capture_output=True, text=True, timeout=15
-        )
-        if r.returncode != 0:
-            print(f"\n⚠️ git worktree failed: {r.stderr[:200]}")
-            return None
+        # 0. Сохраняем текущие изменения перед переключением
+        subprocess.run(["git", "stash", "--include-untracked"], capture_output=True, timeout=10)
 
-        # 2. Копируем сгенерированный код в worktree (только код, не отчёты)
+        # 1. Создаём ветку от master
+        subprocess.run(["git", "checkout", "master"], capture_output=True, timeout=10)
+        subprocess.run(["git", "checkout", "-b", branch], capture_output=True, timeout=10)
+
+        # 2. Копируем сгенерированный код (только код, не отчёты)
         code_files = [
             f for f in run_dir.rglob("*")
             if f.is_file()
@@ -572,29 +551,31 @@ def create_pr_from_run(run_dir: Path, task: str, timestamp: str,
             and f.name not in (".env", ".env.example", ".gitignore")
             and "__pycache__" not in str(f)
             and ".venv" not in str(f)
-            and ".collision" not in f.suffix  # пропускаем дубликаты-коллизии
         ]
         for src in code_files:
             rel = src.relative_to(run_dir)
-            dst = worktree_dir / rel
+            dst = Path.cwd() / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
 
-        # 3. Коммитим в worktree
-        subprocess.run(["git", "add", "-A"], cwd=str(worktree_dir), capture_output=True, timeout=10)
+        # 3. Коммитим
+        subprocess.run(["git", "add", "-A"], capture_output=True, timeout=10)
         commit_msg = f"🤖 AI-команда: {title}"
         r = subprocess.run(
             ["git", "commit", "-m", commit_msg],
-            cwd=str(worktree_dir), capture_output=True, text=True, timeout=10
+            capture_output=True, text=True, timeout=10
         )
         if "nothing to commit" in r.stdout + r.stderr:
             print(f"\n⚠️ Нет изменений для PR")
+            subprocess.run(["git", "checkout", "master"], capture_output=True, timeout=10)
+            subprocess.run(["git", "branch", "-D", branch], capture_output=True, timeout=10)
+            subprocess.run(["git", "stash", "pop"], capture_output=True, timeout=10)
             return None
 
         # 4. Пушим
         push_result = subprocess.run(
             ["git", "push", "-u", "origin", branch],
-            cwd=str(worktree_dir), capture_output=True, text=True, timeout=30
+            capture_output=True, text=True, timeout=30
         )
         if push_result.returncode != 0:
             print(f"\n⚠️ Push failed: {push_result.stderr[:200]}")
@@ -631,57 +612,18 @@ def create_pr_from_run(run_dir: Path, task: str, timestamp: str,
         pr_url = create_pr(branch, f"🤖 {title}", body)
         if pr_url:
             print(f"\n🔀 PR создан: {pr_url}")
+
+        # Возвращаемся на master и восстанавливаем stash
+        subprocess.run(["git", "checkout", "master"], capture_output=True, timeout=10)
+        subprocess.run(["git", "stash", "pop"], capture_output=True, timeout=10)
         return pr_url
 
     except Exception as e:
         print(f"\n⚠️ Ошибка создания PR: {e}")
-        return None
-    finally:
-        # Всегда чистим worktree
-        subprocess.run(["git", "worktree", "remove", str(worktree_dir), "--force"],
-                      capture_output=True, timeout=15)
-        # Удаляем локальную ветку (remote остаётся для PR)
+        subprocess.run(["git", "checkout", "master"], capture_output=True, timeout=10)
         subprocess.run(["git", "branch", "-D", branch], capture_output=True, timeout=10)
-
-
-def _close_stale_prs(task: str) -> None:
-    """Закрыть открытые PR с тем же заголовком задачи (дедупликация)."""
-    import os
-    import requests
-
-    token = os.getenv("GITHUB_TOKEN")
-    if not token:
-        return
-    user = os.getenv("GITHUB_USER", "druner-ai")
-    repo = os.getenv("GITHUB_REPO", "ai-team-corp")
-    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
-    api = f"https://api.github.com/repos/{user}/{repo}"
-
-    # Нормализуем задачу для сравнения (первые 60 символов без эмодзи)
-    task_prefix = task[:60].strip().lower()
-
-    try:
-        r = requests.get(f"{api}/pulls?state=open&per_page=50", headers=headers, timeout=10)
-        if r.status_code != 200:
-            return
-        for pr in r.json():
-            pr_title = pr["title"].replace("🤖 ", "").strip().lower()
-            # Если заголовок PR начинается с тех же 60 символов — это дубль
-            if pr_title.startswith(task_prefix[:40]):
-                pr_number = pr["number"]
-                close_r = requests.patch(
-                    f"{api}/pulls/{pr_number}",
-                    headers=headers,
-                    json={"state": "closed"},
-                    timeout=10
-                )
-                if close_r.status_code == 200:
-                    print(f"🔒 Закрыт дубль PR #{pr_number}: {pr['title'][:50]}")
-                # Удаляем remote-ветку
-                branch_name = pr["head"]["ref"]
-                requests.delete(f"{api}/git/refs/heads/{branch_name}", headers=headers, timeout=10)
-    except Exception:
-        pass  # Не критично, продолжаем
+        subprocess.run(["git", "stash", "pop"], capture_output=True, timeout=10)
+        return None
 
 
 def _count_code_lines(run_dir: Path) -> int:
