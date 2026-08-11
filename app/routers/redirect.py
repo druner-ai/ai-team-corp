@@ -1,16 +1,32 @@
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import RedirectResponse
-from sqlite3 import Connection
-from app.database.connection import get_db
-from app.crud import get_url_by_code, increment_clicks
+"""
+Router for URL redirection.
+"""
 
-router = APIRouter()
+from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import RedirectResponse
+
+from app.database.connection import get_connection
+
+router = APIRouter(tags=["redirect"])
 
 
 @router.get("/{short_code}")
-async def redirect_to_url(short_code: str, db: Connection = Depends(get_db)):
-    url_data = get_url_by_code(db, short_code)
-    if url_data is None:
-        raise HTTPException(status_code=404, detail="URL not found")
-    increment_clicks(db, short_code)
-    return RedirectResponse(url=url_data["original_url"], status_code=302)
+def redirect_to_original(short_code: str):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT original_url FROM urls WHERE short_code = ?", (short_code,)
+    ).fetchone()
+
+    if row is None:
+        conn.close()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="URL not found")
+
+    original_url = row["original_url"]
+    conn.execute(
+        "UPDATE urls SET access_count = access_count + 1 WHERE short_code = ?",
+        (short_code,),
+    )
+    conn.commit()
+    conn.close()
+
+    return RedirectResponse(url=original_url, status_code=status.HTTP_302_FOUND)

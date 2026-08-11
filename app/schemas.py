@@ -1,16 +1,24 @@
+"""
+Pydantic schemas for request/response validation.
+"""
+
+from datetime import datetime
+
 from pydantic import BaseModel, HttpUrl
 
 
-class URLCreate(BaseModel):
+class URLCreateRequest(BaseModel):
     url: HttpUrl
 
 
-class URLInfo(BaseModel):
+class URLCreateResponse(BaseModel):
     short_code: str
     short_url: str
+    original_url: str
 
 
-class URLStats(BaseModel):
-    url: str
-    clicks: int
-    created_at: str
+class URLStatsResponse(BaseModel):
+    short_code: str
+    original_url: str
+    access_count: int
+    created_at: datetime

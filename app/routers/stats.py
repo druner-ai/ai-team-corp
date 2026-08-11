@@ -1,15 +1,31 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlite3 import Connection
-from app.database.connection import get_db
-from app.schemas import URLStats
-from app.crud import get_stats
+"""
+Router for URL statistics.
+"""
 
-router = APIRouter()
+from fastapi import APIRouter, HTTPException, status
+
+from app.database.connection import get_connection
+from app.schemas import URLStatsResponse
+
+router = APIRouter(prefix="/api", tags=["stats"])
 
 
-@router.get("/stats/{short_code}", response_model=URLStats)
-async def url_stats(short_code: str, db: Connection = Depends(get_db)):
-    stats = get_stats(db, short_code)
-    if stats is None:
-        raise HTTPException(status_code=404, detail="URL not found")
-    return stats
+@router.get("/stats/{short_code}", response_model=URLStatsResponse)
+def get_url_stats(short_code: str):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT short_code, original_url, access_count, created_at FROM urls WHERE short_code = ?",
+        (short_code,),
+    ).fetchone()
+
+    if row is None:
+        conn.close()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="URL not found")
+
+    conn.close()
+    return URLStatsResponse(
+        short_code=row["short_code"],
+        original_url=row["original_url"],
+        access_count=row["access_count"],
+        created_at=row["created_at"],
+    )
