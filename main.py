@@ -182,6 +182,15 @@ def _extract_files(text: str, run_dir: Path) -> dict[str, Path]:
         # Пропускаем однобуквенные имена и JSON-артефакты
         if len(filepath) <= 2 or filepath in "[]{}":
             continue
+        # Пропускаем мусор: версии зависимостей, разделители, HTTP-статусы, box-drawing
+        if any(c in filepath for c in (">=", "==", ">", "<")) or filepath in ("---", "..."):
+            continue
+        if filepath.startswith("HTTP/") or filepath.startswith("┌") or filepath.startswith("│") or filepath.startswith("└"):
+            continue
+        if filepath.endswith("/") or "┐" in filepath or "┘" in filepath:
+            continue
+        if not any(c.isalpha() for c in filepath.replace("/", "").replace(".", "").replace("-", "").replace("_", "")):
+            continue
         if len(content) < 20:
             continue
 
