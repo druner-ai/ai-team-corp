@@ -1,0 +1,29 @@
+services:
+  notes-api:
+    build: .
+    container_name: notes-api
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - STORAGE_FILE=/app/data/notes.json
+      - DEBUG=true
+    volumes:
+      - notes-data:/app/data
+    networks:
+      - notes-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/notes')\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  notes-data:
+
+networks:
+  notes-network:
+    driver: bridge
