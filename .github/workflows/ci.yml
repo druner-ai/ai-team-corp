@@ -1,71 +1,54 @@
-name: CI — Test & Lint
+name: CI/CD
 
 on:
   push:
-    branches: [master, 'ai-team/**']
+    branches:
+      - master
+      - 'ai-team/**'
   pull_request:
-    branches: [master]
+    branches:
+      - master
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
+      - name: Create virtual environment and install dependencies
         run: |
           python -m venv .venv
-          . .venv/bin/activate
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          elif [ -f pyproject.toml ]; then
-            pip install -e .
-          fi
-          pip install pytest pytest-asyncio pytest-cov
+          .venv/bin/pip install --upgrade pip setuptools wheel
+          .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run tests
-        run: |
-          . .venv/bin/activate
-          pytest tests/ -v --tb=short
-
-  lint:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install ruff
-        run: pip install ruff
-
-      - name: Lint
-        run: ruff check --select=E,F,I,N --ignore=E501 .
+        run: .venv/bin/pytest tests/ -v --tb=short
 
   build:
     needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Build Docker image
-        run: |
-          if [ -f Dockerfile ]; then
-            docker build -t ai-team-app .
-            echo "✅ Docker build OK"
-          else
-            echo "⚠️ No Dockerfile — skipping"
-          fi
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: url-shortener:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

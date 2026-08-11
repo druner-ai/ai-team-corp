@@ -1,0 +1,22 @@
+services:
+  app:
+    build: .
+    container_name: url-shortener
+    ports:
+      - "8000:8000"
+    environment:
+      - BASE_URL=${BASE_URL:-http://localhost:8000}
+      - DB_PATH=${DB_PATH:-/app/data/urls.db}
+      - CODE_LENGTH=${CODE_LENGTH:-6}
+    volumes:
+      - sqlite_data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/api/health').raise_for_status()"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  sqlite_data:
