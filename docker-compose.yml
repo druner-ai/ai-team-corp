@@ -1,0 +1,30 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_PATH=/app/data/urls.db
+      - BASE_URL=http://localhost:8000
+      - CODE_LENGTH=6
+      - MAX_CUSTOM_CODE_LENGTH=16
+      - DB_JOURNAL_MODE=WAL
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  test:
+    build: .
+    command: pytest tests/ -v --tb=short
+    environment:
+      - DATABASE_PATH=:memory:
+    depends_on:
+      - app
+    profiles:
+      - test
