@@ -146,41 +146,34 @@ def _extract_files_json(raw_output: str, run_dir: Path, protect_tests: bool = Fa
     saved = {}
     data = None
 
-    # Пробуем прямой парсинг
+    # Пробуем прямой парсинг (чистый JSON)
     try:
         data = json.loads(raw_output)
     except (json.JSONDecodeError, TypeError):
         pass
 
-    # Если не получилось — ищем JSON в markdown
+    # Если не получилось — ищем JSON в тексте
     if data is None:
         import re
-        # Ищем JSON после "## Результат" (сырой вывод агента)
+        # Сначала пробуем после "## Результат" (если есть)
         result_marker = raw_output.find("## Результат")
-        if result_marker != -1:
-            after_result = raw_output[result_marker:]
-            # Берём первый JSON-блок после ## Результат
-            match = re.search(r'\{.*\}', after_result, re.DOTALL)
-            if match:
-                try:
-                    data = json.loads(match.group())
-                except json.JSONDecodeError:
-                    # Пробуем найти следующий JSON-блок
-                    match2 = re.search(r'\{.*\}', after_result[match.end():], re.DOTALL)
-                    if match2:
-                        try:
-                            data = json.loads(match2.group())
-                        except json.JSONDecodeError:
-                            return saved
-                    else:
+        search_text = raw_output[result_marker:] if result_marker != -1 else raw_output
+
+        # Ищем JSON-блок
+        match = re.search(r'\{.*\}', search_text, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group())
+            except json.JSONDecodeError:
+                # Пробуем найти следующий JSON-блок
+                remaining = search_text[match.end():]
+                match2 = re.search(r'\{.*\}', remaining, re.DOTALL)
+                if match2:
+                    try:
+                        data = json.loads(match2.group())
+                    except json.JSONDecodeError:
                         return saved
-        else:
-            # Нет маркера — пробуем любой JSON
-            match = re.search(r'\{.*\}', raw_output, re.DOTALL)
-            if match:
-                try:
-                    data = json.loads(match.group())
-                except json.JSONDecodeError:
+                else:
                     return saved
 
     if data is None:
@@ -203,9 +196,27 @@ def _extract_files_json(raw_output: str, run_dir: Path, protect_tests: bool = Fa
 
     return saved
 
-def _extract_files(text: str, run_dir: Path, protect_tests: bool = False, role: str = "") -> dict[str, Path]:
-    """Извлечь файлы: сначала пробуем JSON, затем regex-парсинг markdown."""
-    # Сначала JSON (output_pydantic)
+def _extract_files(text: str, run_dir: Path, protect_tests: bool = False, role: str = "", json_dict: dict | None = None) -> dict[str, Path]:
+    """Извлечь файлы: сначала пробуем json_dict (если есть), затем JSON в тексте, затем regex."""
+    # 1. Если передан json_dict — используем его (самый надёжный источник)
+    if json_dict and isinstance(json_dict, dict):
+        files = json_dict.get("files", [])
+        if isinstance(files, list):
+            saved = {}
+            for entry in files:
+                if not isinstance(entry, dict):
+                    continue
+                filepath = entry.get("path", "")
+                content = entry.get("content", "")
+                if not filepath or not content:
+                    continue
+                result = _write_file_safe(run_dir, filepath, content, overwrite=True, protect_tests=protect_tests, role=role)
+                if result:
+                    saved[filepath] = result
+            if saved:
+                return saved
+
+    # 2. Пробуем JSON в тексте
     saved = _extract_files_json(text, run_dir, protect_tests=protect_tests, role=role)
     if saved:
         return saved
@@ -285,7 +296,7 @@ def save_all_artifacts(run_dir: Path) -> dict[str, Path]:
 
         # fix_task — защищаем тесты
         is_fix_stage = i == 4 or "fix" in task_name.lower()
-        extracted = _extract_files(raw_output, stage_dir, protect_tests=is_fix_stage, role=agent_role)
+        extracted = _extract_files(raw_output, stage_dir, protect_tests=is_fix_stage, role=agent_role, json_dict=json_dict)
         all_files.update(extracted)
 
         # Запоминаем последнюю волну, которая произвела файлы
@@ -606,7 +617,9 @@ def main():
 
     # ── Сохраняем артефакты ДО деплоя ──────────────────────────
     saved_files = save_all_artifacts(run_dir)
-    final_extracted = _extract_files(result_str, run_dir)
+    # Финальная сборка: извлекаем из результата Crew (DevOps), передаём json_dict если есть
+    final_json = getattr(result, "json_dict", None) or {}
+    final_extracted = _extract_files(result_str, run_dir, json_dict=final_json)
     saved_files.update(final_extracted)
 
     # ── ГЕЙТ: программный запуск тестов перед PR ───────────────
