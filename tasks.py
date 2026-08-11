@@ -59,11 +59,12 @@ def make_tasks(task_description: str) -> list[Task]:
         ТРЕБОВАНИЯ К КОДУ:
         - Включай requirements.txt (все runtime-зависимости)
         - Включай requirements-dev.txt (все test-зависимости: pytest, httpx, pytest-asyncio, aiosqlite и т.д.)
-        - Включай pytest.ini или conftest.py в корне с настройкой pythonpath (иначе CI не найдёт модули)
-        - Включай тесты (pytest)
-        - Включай .env.example
-        - Если в архитектурном документе есть неясности — принимай разумное решение и документируй его
-
+        - Включай pytest.ini или conftest.py в корне с настройкой pythonpath
+        - КРИТИЧНО: conftest.py ДОЛЖЕН инициализировать БД для тестов (см. шаблон в templates/conftest_sqlite_no_orm.py)
+          * Используй in-memory SQLite (:memory:) для скорости и изоляции
+          * Применяй схему из sql/init.sql или создавай таблицы inline
+          * Используй fixture scope="function" — новая БД на каждый тест
+          * Для FastAPI dependency override используй app.dependency_overrides
         КРИТИЧНО — ЗАВИСИМОСТИ ДЛЯ ТЕСТОВ:
         Все библиотеки, которые импортируются в tests/ (httpx, pytest-asyncio, aiosqlite,
         freezegun и т.д.), ДОЛЖНЫ быть в requirements-dev.txt. DevOps будет использовать
