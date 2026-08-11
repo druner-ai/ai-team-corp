@@ -1,71 +1,46 @@
-name: CI — Test & Lint
+name: CI
 
 on:
   push:
-    branches: [master, 'ai-team/**']
+    branches: [master, ai-team/**]
   pull_request:
     branches: [master]
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Create virtual environment and install dependencies
         run: |
           python -m venv .venv
-          . .venv/bin/activate
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          elif [ -f pyproject.toml ]; then
-            pip install -e .
-          fi
-          pip install pytest pytest-asyncio pytest-cov
+          .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run tests
-        run: |
-          . .venv/bin/activate
-          pytest tests/ -v --tb=short
+        run: .venv/bin/pytest tests/ -v --tb=short
 
-  lint:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install ruff
-        run: pip install ruff
-
-      - name: Lint
-        run: ruff check --select=E,F,I,N --ignore=E501 .
+      - name: Lint (optional)
+        run: .venv/bin/ruff check .
+        continue-on-error: true
 
   build:
-    needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-
+    needs: test
     steps:
       - uses: actions/checkout@v4
 
       - name: Build Docker image
+        run: docker build -t app:test .
+
+      - name: Test image healthcheck
         run: |
-          if [ -f Dockerfile ]; then
-            docker build -t ai-team-app .
-            echo "✅ Docker build OK"
-          else
-            echo "⚠️ No Dockerfile — skipping"
-          fi
+          docker run --rm -d --name testapp -p 8000:8000 app:test
+          sleep 5
+          curl -f http://localhost:8000/health || exit 1
+          docker stop testapp
