@@ -23,18 +23,18 @@ MODELS = {
         "price_per_1m": (0.44, 0.87),
     },
     "qa": {
-        "name": "deepseek/deepseek-v4-flash",
+        "name": "mistralai/codestral-2508",
         "temperature": 0.2,
         "timeout": 90,
         "max_retry": 2,
-        "price_per_1m": (0.08, 0.17),
+        "price_per_1m": (0.30, 0.90),
     },
     "devops": {
-        "name": "deepseek/deepseek-v4-flash",
+        "name": "deepseek/deepseek-v4-pro",
         "temperature": 0.0,
         "timeout": 60,
         "max_retry": 2,
-        "price_per_1m": (0.08, 0.17),
+        "price_per_1m": (0.69, 1.37),
     },
 }
 
