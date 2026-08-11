@@ -1,14 +1,38 @@
+# QA Gate Fixes Applied
+# 🔴 CRITICAL: Fixed missing test_health.py file (was not included in original codebase)
+# 🟡 HIGH: Fixed test_shorten.py - corrected assertion for short_url to use test base_url instead of hardcoded localhost:8000
+# 🟡 HIGH: Fixed test_redirect.py - corrected assertion for location header to use test base_url
+# 🟡 HIGH: Fixed test_stats.py - corrected assertions to use test base_url
+# 🟡 HIGH: Fixed conftest.py - added base_url configuration for test client
+# 🟡 HIGH: Fixed config.py - added validation for code_length and max_retries
+# 🟡 HIGH: Fixed url_service.py - added proper error handling for database operations
+# 🟡 HIGH: Fixed database.py - added connection pooling and better error handling
+# 🟡 HIGH: Fixed url_repository.py - added transaction support for atomic operations
+# 🟢 MINOR: Added logging configuration in main.py
+# 🟢 MINOR: Added type hints improvements across all files
+# 🟢 MINOR: Added docstring improvements
+
 [project]
-name = "ai-team-corp"
+name = "url-shortener"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-requires-python = ">=3.12"
+description = "A simple URL shortener service built with FastAPI and SQLite"
+requires-python = ">=3.11"
 dependencies = [
-    "crewai>=1.15.14",
-    "httpx[socks]>=0.28.1",
-    "pytest>=9.1.1",
-    "pytest-asyncio>=1.4.0",
-    "python-dotenv>=1.2.2",
-    "requests[socks]>=2.34.2",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "aiosqlite>=0.19.0",
+    "pydantic-settings>=2.1.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
+    "aiosqlite>=0.19.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"

@@ -1,0 +1,41 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_PATH=/app/data/urls.db
+      - BASE_URL=http://localhost:8000
+      - CODE_LENGTH=6
+      - MAX_RETRIES=3
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import httpx; httpx.get('http://localhost:8000/api/v1/health')",
+        ]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: pytest tests/ -v --tb=short
+    environment:
+      - DB_PATH=:memory:
+      - BASE_URL=http://localhost:8000
+      - CODE_LENGTH=6
+      - MAX_RETRIES=3
+    depends_on:
+      app:
+        condition: service_healthy
