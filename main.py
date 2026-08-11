@@ -64,11 +64,16 @@ def on_task_complete(output: TaskOutput):
     _all_outputs.append((task_name, agent_role, raw_output, json_output))
 
 
-def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool = False, protect_tests: bool = False) -> Path | None:
+def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool = False, protect_tests: bool = False, role: str = "") -> Path | None:
     """Безопасно записать файл, обрабатывая коллизии имён и path traversal.
 
     protect_tests=True — отклонять запись в tests/** (используется на fix/ci-fix
     этапах, чтобы модель не перезаписывала тесты, которые определяют контракт).
+
+    role — whitelist путей по ролям:
+    - "test designer": только tests/**
+    - "devops": только Dockerfile, docker-compose.yml, .dockerignore, .github/**
+    - "разработчик" (fix): всё кроме tests/**
     """
     # Нормализуем путь
     if filepath.startswith("path/to/"):
@@ -84,6 +89,20 @@ def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool
         full_path.relative_to(run_dir.resolve())
     except ValueError:
         return None
+
+    # Whitelist по ролям
+    role_lower = role.lower()
+    if "test designer" in role_lower:
+        if not (p.parts[0] == "tests" or p.parts[0] == "test"):
+            return None
+    elif "devops" in role_lower:
+        allowed = {"dockerfile", "docker-compose.yml", ".dockerignore", ".github", ".env.example", "readme.md"}
+        if p.parts[0] not in allowed:
+            return None
+    elif "разработ" in role_lower and protect_tests:
+        # fix/ci-fix: не трогаем тесты
+        if p.parts[0] == "tests" or p.parts[0] == "test":
+            return None
 
     # Защита тестов: fix/ci-fix не имеют права менять tests/**
     if protect_tests and (p.parts[0] == "tests" or p.parts[0] == "test"):
@@ -116,7 +135,7 @@ def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool
     return full_path
 
 
-def _extract_files_json(raw_output: str, run_dir: Path, protect_tests: bool = False) -> dict[str, Path]:
+def _extract_files_json(raw_output: str, run_dir: Path, protect_tests: bool = False, role: str = "") -> dict[str, Path]:
     """Извлечь файлы из JSON-вывода (output_pydantic). Возвращает {} если не JSON."""
     saved = {}
     try:
@@ -135,16 +154,16 @@ def _extract_files_json(raw_output: str, run_dir: Path, protect_tests: bool = Fa
         content = entry.get("content", "")
         if not filepath or not content:
             continue
-        result = _write_file_safe(run_dir, filepath, content, overwrite=True, protect_tests=protect_tests)
+        result = _write_file_safe(run_dir, filepath, content, overwrite=True, protect_tests=protect_tests, role=role)
         if result:
             saved[filepath] = result
 
     return saved
 
-def _extract_files(text: str, run_dir: Path, protect_tests: bool = False) -> dict[str, Path]:
+def _extract_files(text: str, run_dir: Path, protect_tests: bool = False, role: str = "") -> dict[str, Path]:
     """Извлечь файлы: сначала пробуем JSON, затем regex-парсинг markdown."""
     # Сначала JSON (output_pydantic)
-    saved = _extract_files_json(text, run_dir, protect_tests=protect_tests)
+    saved = _extract_files_json(text, run_dir, protect_tests=protect_tests, role=role)
     if saved:
         return saved
 
@@ -185,11 +204,27 @@ def _extract_files(text: str, run_dir: Path, protect_tests: bool = False) -> dic
 
 
 def save_all_artifacts(run_dir: Path) -> dict[str, Path]:
-    """Извлечь файлы из выводов задач, которые реально производят файлы."""
+    """Извлечь файлы из выводов задач, которые реально производят файлы.
+
+    Каждый этап пишет в собственный подкаталог (stage_02_dev/, stage_04_fix/ и т.д.).
+    Финальная сборка — копия последней успешной волны, без объединения с предыдущими.
+    Это устраняет проблему наслоения: два conftest.py, мёртвый груз от старых волн.
+    """
     all_files = {}
     # Роли, которые реально производят файлы (не Архитектор, не QA)
-    # Test Designer производит тесты, Разработчик — код, DevOps — инфраструктуру
     FILE_PRODUCING_ROLES = {"test designer", "разработ", "devops"}
+
+    # Маппинг индекса задачи на stage-директорию
+    # 0=архитектор, 1=test_designer, 2=разработчик, 3=QA, 4=fix, 5=devops
+    STAGE_DIRS = {
+        1: "stage_01_tests",
+        2: "stage_02_dev",
+        4: "stage_04_fix",
+        5: "stage_05_devops",
+    }
+
+    # Отслеживаем последнюю успешную волну для финальной сборки
+    last_wave_dir = None
 
     for i, (task_name, agent_role, raw_output, json_dict) in enumerate(_all_outputs):
         role_lower = agent_role.lower()
@@ -200,14 +235,36 @@ def save_all_artifacts(run_dir: Path) -> dict[str, Path]:
             all_files[f"task_{i:02d}_{agent_role}.md"] = task_file
             continue
 
-        # fix_task — последний вывод Разработчика (index >= 3), защищаем тесты
-        is_fix_stage = "fix" in task_name.lower() or (role_lower.startswith("разработ") and i >= 3)
-        extracted = _extract_files(raw_output, run_dir, protect_tests=is_fix_stage)
+        # Определяем stage-директорию
+        stage_name = STAGE_DIRS.get(i, f"stage_{i:02d}_{agent_role.replace(' ', '_')}")
+        stage_dir = run_dir / stage_name
+        stage_dir.mkdir(parents=True, exist_ok=True)
+
+        # fix_task — защищаем тесты
+        is_fix_stage = i == 4 or "fix" in task_name.lower()
+        extracted = _extract_files(raw_output, stage_dir, protect_tests=is_fix_stage, role=agent_role)
         all_files.update(extracted)
+
+        # Запоминаем последнюю волну, которая произвела файлы
+        if extracted:
+            last_wave_dir = stage_dir
+
         # Также сохраняем сырой вывод каждой задачи
         task_file = run_dir / f"task_{i:02d}_{agent_role.replace(' ', '_')}.md"
         task_file.write_text(f"# {agent_role}\n\n## Задача\n{task_name}\n\n## Результат\n\n{raw_output}")
         all_files[f"task_{i:02d}_{agent_role}.md"] = task_file
+
+    # Финальная сборка: копируем файлы из последней успешной волны в корень run_dir
+    # Это то, что пойдёт в PR и Docker
+    if last_wave_dir:
+        import shutil
+        for item in last_wave_dir.rglob("*"):
+            if item.is_file():
+                rel = item.relative_to(last_wave_dir)
+                dest = run_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, dest)
+                all_files[str(rel)] = dest
 
     return all_files
 
@@ -640,18 +697,54 @@ def _get_ci_failure_logs(run_id: int, max_chars: int = 6000) -> str:
 
 
 def _run_ci_fix(arch_doc: str, ci_logs: str, run_dir: Path) -> int:
-    """Запустить Разработчика для исправления CI-ошибок. Возвращает кол-во новых файлов."""
+    """Запустить Разработчика для исправления CI-ошибок. Возвращает кол-во новых файлов.
+
+    Вместо arch_doc[:2000] передаём файлы, упомянутые в traceback + весь tests/.
+    Это дешевле полной базы и точнее — убирает шум.
+    """
     from crewai import Task, Crew, Process
     from output_models import CodeOutput
     from tasks import make_tasks
 
-    # Создаём fix-задачу с CI-логами
+    # Извлекаем файлы из traceback (строки вида File "path/to/file.py")
+    import re
+    traceback_files = set()
+    for match in re.finditer(r'File "([^"]+\.py)"', ci_logs):
+        path = match.group(1)
+        # Нормализуем: убираем абсолютный префикс CI-раннера
+        if "/ai-team-corp/" in path:
+            path = path.split("/ai-team-corp/")[-1]
+        elif "/home/runner/work/" in path:
+            parts = path.split("/")
+            # Берём путь после repo-name
+            if len(parts) > 5:
+                path = "/".join(parts[5:])
+        traceback_files.add(path)
+
+    # Читаем содержимое файлов из traceback
+    file_contents = []
+    for tf in sorted(traceback_files):
+        tf_path = run_dir / tf
+        if tf_path.exists() and tf_path.is_file():
+            content = tf_path.read_text()
+            file_contents.append(f"### {tf}\n```python\n{content}\n```")
+
+    # Добавляем весь tests/ (контракт, который не трогаем)
+    tests_dir = run_dir / "tests"
+    if tests_dir.exists():
+        for tf in sorted(tests_dir.rglob("*.py")):
+            content = tf.read_text()
+            file_contents.append(f"### {tf.relative_to(run_dir)}\n```python\n{content}\n```")
+
+    context = "\n\n".join(file_contents) if file_contents else arch_doc[:2000]
+
+    # Создаём fix-задачу с CI-логами и файлами из traceback
     fix_task = Task(
         description=f"""
         CI/CD пайплайн упал. Исправь код, чтобы тесты прошли.
 
-        АРХИТЕКТУРНЫЙ ДОКУМЕНТ (для контекста):
-        {arch_doc[:2000]}
+        КОНТЕКСТ — файлы, упомянутые в traceback, и весь tests/:
+        {context}
 
         ЛОГИ ОШИБОК CI (последние строки — самое важное):
         ```
@@ -660,14 +753,15 @@ def _run_ci_fix(arch_doc: str, ci_logs: str, run_dir: Path) -> int:
 
         ПРАВИЛА ДЛЯ ФИКСА:
         - Исправь ТОЛЬКО то, что падает в CI (логические ошибки, инициализация БД, фикстуры)
-        - Верни ПОЛНУЮ кодовую базу (все файлы), а не только исправленные
+        - Верни ТОЛЬКО изменённые файлы (не всю базу)
         - В поле content первого файла добавь комментарий: что исправлено и почему
         - НЕ меняй архитектуру без крайней необходимости
         - Убедись, что conftest.py инициализирует БД для тестов (fixture, lifespan и т.д.)
         - КРИТИЧНО: тестовые файлы должны содержать РЕАЛЬНЫЙ КОД тестов, не только комментарии
         - КРИТИЧНО: каждый файл должен иметь правильное расширение и содержать валидный Python-код
+        - КРИТИЧНО: НЕ изменяй тесты, НЕ добавляй новые тесты, НЕ удаляй существующие
         """,
-        expected_output="JSON с полем files — полная кодовая база с исправлениями.",
+        expected_output="JSON с полем files — изменённые файлы с исправлениями.",
         agent=developer,
         output_pydantic=CodeOutput,
     )
