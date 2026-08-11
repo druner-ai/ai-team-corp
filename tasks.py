@@ -94,6 +94,7 @@ def make_tasks(task_description: str, run_dir: str = "") -> list[Task]:
         expected_output="JSON с полем files — тесты (conftest.py + test_*.py) по архитектурному документу.",
         agent=test_designer,
         output_pydantic=CodeOutput,
+        name="test_design",
     )
 
     # TDD Этап 2: Разработчик пишет код, который ПРОХОДИТ тесты
@@ -166,6 +167,7 @@ def make_tasks(task_description: str, run_dir: str = "") -> list[Task]:
         expected_output="JSON с полем files — код проекта, который проходит тесты Test Designer'а.",
         agent=developer,
         output_pydantic=CodeOutput,
+        name="coding",
     )
 
     review_task = Task(
@@ -198,6 +200,7 @@ def make_tasks(task_description: str, run_dir: str = "") -> list[Task]:
         """,
         expected_output="Отчёт о проверке: список проблем с приоритетами + вердикт Go/No-Go.",
         agent=qa_gate,
+        name="review",
     )
 
     fix_task = Task(
@@ -226,6 +229,7 @@ def make_tasks(task_description: str, run_dir: str = "") -> list[Task]:
         expected_output="JSON с полем files — полная кодовая база с исправлениями (тесты не тронуты).",
         agent=developer,
         output_pydantic=CodeOutput,
+        name="fix",
     )
 
     # Дублируем тестовые зависимости в requirements-dev.txt для CI
@@ -300,6 +304,7 @@ def make_tasks(task_description: str, run_dir: str = "") -> list[Task]:
         expected_output="JSON с полем files — Dockerfile, docker-compose.yml, .env.example, README.md, CI/CD.",
         agent=devops,
         output_pydantic=CodeOutput,
+        name="devops",
     )
 
     return [architecture_doc, test_design_task, coding_task, review_task, fix_task, docker_task]

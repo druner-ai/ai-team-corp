@@ -294,8 +294,8 @@ def save_all_artifacts(run_dir: Path) -> dict[str, Path]:
         stage_dir = run_dir / stage_name
         stage_dir.mkdir(parents=True, exist_ok=True)
 
-        # fix_task — защищаем тесты
-        is_fix_stage = i == 4 or "fix" in task_name.lower()
+        # fix_task — защищаем тесты (только index 4, не "fix" в task_name — это срабатывает на "fixtures")
+        is_fix_stage = i == 4
         extracted = _extract_files(raw_output, stage_dir, protect_tests=is_fix_stage, role=agent_role, json_dict=json_dict)
         all_files.update(extracted)
 
