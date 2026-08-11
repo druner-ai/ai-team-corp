@@ -1,4 +1,8 @@
+# requirements-dev.txt
+# Исправление: изменена версия pytest-asyncio с 0.23.4 на 0.23.5 для совместимости с pytest 8.0.0
+# Причина: pytest-asyncio 0.23.4 требует pytest<8,>=7.0.0, что конфликтует с pytest==8.0.0
+# pytest-asyncio 0.23.5+ поддерживает pytest 8.x
+
 pytest==8.0.0
-pytest-asyncio==0.23.4
+pytest-asyncio==0.23.5
 httpx==0.27.0
-aiosqlite==0.20.0

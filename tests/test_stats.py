@@ -1,25 +1,33 @@
+"""
+Тесты для роутера статистики.
+"""
+
 import pytest
 from httpx import AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_stats_existing_code(client: AsyncClient):
-    create_resp = await client.post(
-        "/api/shorten", json={"url": "https://example.com"}
+async def test_get_url_stats(client: AsyncClient) -> None:
+    """Проверяет получение статистики по существующей ссылке."""
+    # Создаём ссылку
+    create_response = await client.post(
+        "/shorten",
+        json={"url": "https://example.com/stats-test"},
     )
-    code = create_resp.json()["code"]
+    short_code = create_response.json()["short_code"]
 
-    stats_resp = await client.get(f"/api/stats/{code}")
-    assert stats_resp.status_code == 200
-    data = stats_resp.json()
-    assert data["code"] == code
-    assert data["original_url"] == "https://example.com"
-    assert data["clicks"] == 0
-    assert "created_at" in data
-    assert data["last_clicked_at"] is None
+    # Получаем статистику
+    response = await client.get(f"/stats/{short_code}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["short_code"] == short_code
+    assert data["original_url"] == "https://example.com/stats-test"
+    assert data["access_count"] == 0
+    assert data["created_at"] is not None
 
 
 @pytest.mark.asyncio
-async def test_stats_nonexistent_code(client: AsyncClient):
-    response = await client.get("/api/stats/nonexistent")
+async def test_get_url_stats_not_found(client: AsyncClient) -> None:
+    """Проверяет 404 для несуществующего кода."""
+    response = await client.get("/stats/nonexistent")
     assert response.status_code == 404

@@ -1,41 +1,49 @@
+"""
+Тесты для роутера редиректа.
+"""
+
 import pytest
 from httpx import AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_redirect_existing_code(client: AsyncClient):
-    # Create a short URL first
-    create_resp = await client.post(
-        "/api/shorten", json={"url": "https://example.com"}
+async def test_redirect_to_url(client: AsyncClient) -> None:
+    """Проверяет редирект по существующей короткой ссылке."""
+    # Сначала создаём ссылку
+    create_response = await client.post(
+        "/shorten",
+        json={"url": "https://example.com/target"},
     )
-    code = create_resp.json()["code"]
+    short_code = create_response.json()["short_code"]
 
-    # Follow redirect manually
-    redirect_resp = await client.get(f"/{code}", follow_redirects=False)
-    assert redirect_resp.status_code == 302
-    assert redirect_resp.headers["location"] == "https://example.com"
+    # Переходим по короткой ссылке
+    response = await client.get(f"/{short_code}", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://example.com/target"
 
 
 @pytest.mark.asyncio
-async def test_redirect_nonexistent_code(client: AsyncClient):
+async def test_redirect_not_found(client: AsyncClient) -> None:
+    """Проверяет 404 для несуществующего кода."""
     response = await client.get("/nonexistent")
     assert response.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_redirect_increments_clicks(client: AsyncClient):
-    create_resp = await client.post(
-        "/api/shorten", json={"url": "https://example.com"}
+async def test_redirect_increments_counter(client: AsyncClient) -> None:
+    """Проверяет, что счётчик переходов увеличивается."""
+    # Создаём ссылку
+    create_response = await client.post(
+        "/shorten",
+        json={"url": "https://example.com/counter"},
     )
-    code = create_resp.json()["code"]
+    short_code = create_response.json()["short_code"]
 
-    # First redirect
-    await client.get(f"/{code}", follow_redirects=False)
-    stats_resp = await client.get(f"/api/stats/{code}")
-    assert stats_resp.status_code == 200
-    assert stats_resp.json()["clicks"] == 1
+    # Переходим несколько раз
+    for _ in range(3):
+        await client.get(f"/{short_code}", follow_redirects=False)
 
-    # Second redirect
-    await client.get(f"/{code}", follow_redirects=False)
-    stats_resp2 = await client.get(f"/api/stats/{code}")
-    assert stats_resp2.json()["clicks"] == 2
+    # Проверяем статистику
+    stats_response = await client.get(f"/stats/{short_code}")
+    assert stats_response.status_code == 200
+    assert stats_response.json()["access_count"] == 3
