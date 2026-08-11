@@ -64,8 +64,12 @@ def on_task_complete(output: TaskOutput):
     _all_outputs.append((task_name, agent_role, raw_output, json_output))
 
 
-def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool = False) -> Path | None:
-    """Безопасно записать файл, обрабатывая коллизии имён и path traversal."""
+def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool = False, protect_tests: bool = False) -> Path | None:
+    """Безопасно записать файл, обрабатывая коллизии имён и path traversal.
+
+    protect_tests=True — отклонять запись в tests/** (используется на fix/ci-fix
+    этапах, чтобы модель не перезаписывала тесты, которые определяют контракт).
+    """
     # Нормализуем путь
     if filepath.startswith("path/to/"):
         filepath = filepath.replace("path/to/", "", 1)
@@ -79,6 +83,10 @@ def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool
     try:
         full_path.relative_to(run_dir.resolve())
     except ValueError:
+        return None
+
+    # Защита тестов: fix/ci-fix не имеют права менять tests/**
+    if protect_tests and (p.parts[0] == "tests" or p.parts[0] == "test"):
         return None
 
     # Пропускаем директории
@@ -108,7 +116,7 @@ def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool
     return full_path
 
 
-def _extract_files_json(raw_output: str, run_dir: Path) -> dict[str, Path]:
+def _extract_files_json(raw_output: str, run_dir: Path, protect_tests: bool = False) -> dict[str, Path]:
     """Извлечь файлы из JSON-вывода (output_pydantic). Возвращает {} если не JSON."""
     saved = {}
     try:
@@ -127,17 +135,16 @@ def _extract_files_json(raw_output: str, run_dir: Path) -> dict[str, Path]:
         content = entry.get("content", "")
         if not filepath or not content:
             continue
-        result = _write_file_safe(run_dir, filepath, content, overwrite=True)
+        result = _write_file_safe(run_dir, filepath, content, overwrite=True, protect_tests=protect_tests)
         if result:
             saved[filepath] = result
 
     return saved
 
-
-def _extract_files(text: str, run_dir: Path) -> dict[str, Path]:
+def _extract_files(text: str, run_dir: Path, protect_tests: bool = False) -> dict[str, Path]:
     """Извлечь файлы: сначала пробуем JSON, затем regex-парсинг markdown."""
     # Сначала JSON (output_pydantic)
-    saved = _extract_files_json(text, run_dir)
+    saved = _extract_files_json(text, run_dir, protect_tests=protect_tests)
     if saved:
         return saved
 
@@ -193,7 +200,9 @@ def save_all_artifacts(run_dir: Path) -> dict[str, Path]:
             all_files[f"task_{i:02d}_{agent_role}.md"] = task_file
             continue
 
-        extracted = _extract_files(raw_output, run_dir)
+        # fix_task — последний вывод Разработчика (index >= 3), защищаем тесты
+        is_fix_stage = "fix" in task_name.lower() or (role_lower.startswith("разработ") and i >= 3)
+        extracted = _extract_files(raw_output, run_dir, protect_tests=is_fix_stage)
         all_files.update(extracted)
         # Также сохраняем сырой вывод каждой задачи
         task_file = run_dir / f"task_{i:02d}_{agent_role.replace(' ', '_')}.md"
@@ -449,7 +458,7 @@ def main():
     run_dir = Path(OUTPUT_DIR) / timestamp
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    tasks = make_tasks(task)
+    tasks = make_tasks(task, run_dir=str(run_dir.resolve()))
 
     crew = Crew(
         agents=[architect, test_designer, developer, qa_gate, devops],
@@ -484,6 +493,19 @@ def main():
     final_extracted = _extract_files(result_str, run_dir)
     saved_files.update(final_extracted)
 
+    # ── ГЕЙТ: программный запуск тестов перед PR ───────────────
+    # Ревью показало: QA-агент 17 прогонов не вызвал run_tests ни разу.
+    # Гейт должен быть кодом, не агентом.
+    from tools import run_tests_quiet
+    tests_green, tests_summary = run_tests_quiet(str(run_dir))
+    if not tests_green:
+        print(f"\n🔴 ЛОКАЛЬНЫЕ ТЕСТЫ НЕ ПРОШЛИ — PR НЕ СОЗДАЁТСЯ")
+        print(f"   См. {run_dir}/tests_output.txt")
+        (run_dir / "tests_output.txt").write_text(tests_summary)
+        status = "❌ Tests failed"
+    else:
+        print(f"\n✅ Локальные тесты пройдены")
+
     # ── Деплой и верификация (DevOps phase 2) ──────────────────
     # Бюджет-гейт: если уже перерасход — пропускаем деплой (экономим ресурсы)
     deploy_report = ""
@@ -501,6 +523,7 @@ def main():
         "cost": cost,
         "models": ", ".join(f"{k}={v['name'].split('/')[1]}" for k, v in MODELS.items()),
         "status": status,
+        "tests_green": tests_green,
     }
 
     report_path = save_report(run_dir, metrics, deploy_report)
@@ -666,7 +689,7 @@ def _run_ci_fix(arch_doc: str, ci_logs: str, run_dir: Path) -> int:
             result_str = result.pydantic.model_dump_json()
         else:
             result_str = str(result) if result else ""
-        new_files = _extract_files(result_str, run_dir)
+        new_files = _extract_files(result_str, run_dir, protect_tests=True)
         return len(new_files)
     except Exception as e:
         print(f"  ⚠️ CI fix failed: {e}")
