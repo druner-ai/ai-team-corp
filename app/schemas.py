@@ -1,24 +1,17 @@
-"""Pydantic schemas for request/response validation."""
-
-from pydantic import BaseModel, AnyUrl, Field
-from typing import Optional
+from pydantic import BaseModel, HttpUrl
+from datetime import datetime
 
 
-class UrlCreateRequest(BaseModel):
-    """Request schema for creating a short URL."""
-    original_url: AnyUrl
+class URLCreate(BaseModel):
+    url: str
 
 
-class UrlCreateResponse(BaseModel):
-    """Response schema after successful short URL creation."""
+class URLInfo(BaseModel):
     short_code: str
-    original_url: str
     short_url: str
 
 
-class UrlStatsResponse(BaseModel):
-    """Response schema for URL statistics."""
-    short_code: str
+class URLStats(BaseModel):
     original_url: str
-    created_at: str
-    clicks_count: int
+    created_at: datetime
+    access_count: int
