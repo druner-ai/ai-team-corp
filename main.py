@@ -159,7 +159,16 @@ def _extract_files(text: str, run_dir: Path) -> dict[str, Path]:
         # Пропускаем если это существующая директория
         if full_path.is_dir():
             continue
+        # Если путь уже существует как файл (не директория) — конфликт имён
+        if full_path.is_file():
+            saved[filepath + ".collision"] = full_path
+            continue
         full_path.parent.mkdir(parents=True, exist_ok=True)
+        # Если родительский путь — существующий файл, переименовываем его
+        if full_path.parent.is_file():
+            collision_name = str(full_path.parent) + ".file"
+            full_path.parent.rename(collision_name)
+            full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(content)
         saved[filepath] = full_path
 
