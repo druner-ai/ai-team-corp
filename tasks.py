@@ -192,11 +192,12 @@ def make_tasks(task_description: str) -> list[Task]:
 
         КРИТИЧНО — PYTHONPATH:
         В корне проекта ДОЛЖЕН быть pytest.ini или conftest.py с настройкой pythonpath.
-        ПРАВИЛЬНЫЙ формат pytest.ini (секция [pytest], не [tool:pytest]):
+        ПРАВИЛЬНЫЙ формат pytest.ini (секция [pytest], не [tool:pytest] и не [tool.pytest.ini_options]):
         [pytest]
         pythonpath = .
         testpaths = tests
         Без этого pytest не найдёт модули app/ в CI.
+        ВАЖНО: [tool.pytest.ini_options] — это для pyproject.toml, НЕ для pytest.ini!
 
         КРИТИЧНО — ЗАВИСИМОСТИ ДЛЯ ТЕСТОВ:
         Разработчик ДОЛЖЕН был создать requirements-dev.txt со всеми test-зависимостями.
