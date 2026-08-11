@@ -1,45 +1,40 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import RedirectResponse
-from sqlite3 import Connection
+import sqlite3
+from app.database import get_db
+from app.urls import repository
+from app.models import ShortenRequest, ShortenResponse, StatsResponse
 
-from app.database.connection import get_db
-from app.urls.schemas import ShortenRequest, ShortenResponse, StatsResponse
-from app.urls.service import create_short_url, resolve_url, get_stats
+router = APIRouter()
 
-api_router = APIRouter()
-redirect_router = APIRouter()
-
-
-@api_router.post("/shorten", response_model=ShortenResponse, status_code=201)
-def shorten_url(
-    request: Request,
-    payload: ShortenRequest,
-    db: Connection = Depends(get_db),
-):
-    try:
-        # pass the string representation of base_url; service will handle slash
-        result = create_short_url(db, str(payload.url), str(request.base_url))
-    except RuntimeError:
-        raise HTTPException(status_code=500, detail="Could not generate unique code")
-    return ShortenResponse(**result)
-
-
-@api_router.get("/stats/{short_code}", response_model=StatsResponse)
-def url_stats(short_code: str, db: Connection = Depends(get_db)):
-    data = get_stats(db, short_code)
-    if not data:
-        raise HTTPException(status_code=404, detail="Short link not found")
-    return StatsResponse(
-        short_code=data["short_code"],
-        original_url=data["original_url"],
-        clicks=data["clicks"],
-        created_at=data["created_at"],
+@router.post("/shorten", status_code=201, response_model=ShortenResponse)
+def create_short_url(request: ShortenRequest, db: sqlite3.Connection = Depends(get_db)):
+    result = repository.create_short_url(db, request.url)
+    short_url = f"http://localhost:8000/{result['short_code']}"
+    return ShortenResponse(
+        short_code=result['short_code'],
+        short_url=short_url,
+        original_url=result['original_url']
     )
 
+@router.get("/{short_code}")
+def redirect_to_url(short_code: str, db: sqlite3.Connection = Depends(get_db)):
+    url_data = repository.get_url_by_code(db, short_code)
+    if url_data is None:
+        raise HTTPException(status_code=404, detail="Short URL not found")
+    repository.increment_clicks(db, short_code)
+    return RedirectResponse(url=url_data["original_url"], status_code=302)
 
-@redirect_router.get("/{short_code}")
-def redirect_to_url(short_code: str, db: Connection = Depends(get_db)):
-    original_url = resolve_url(db, short_code)
-    if not original_url:
-        raise HTTPException(status_code=404, detail="Short link not found")
-    return RedirectResponse(url=original_url, status_code=302)
+@router.get("/stats/{short_code}", response_model=StatsResponse)
+def get_url_stats(short_code: str, db: sqlite3.Connection = Depends(get_db)):
+    url_data = repository.get_url_by_code(db, short_code)
+    if url_data is None:
+        raise HTTPException(status_code=404, detail="Short URL not found")
+    # clicks are already up-to-date at this point
+    url_data = repository.get_url_by_code(db, short_code)
+    return StatsResponse(
+        short_code=url_data["short_code"],
+        original_url=url_data["original_url"],
+        clicks=url_data["clicks"],
+        created_at=url_data["created_at"]
+    )

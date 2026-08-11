@@ -1,17 +1,12 @@
-# Fixes applied:
-# 1. In app/urls/service.py: ensure short_url is constructed correctly
-#    by stripping trailing slash from base_url and adding a single slash before code.
-#    This guarantees correct format regardless of whether base_url ends with '/'.
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from app.urls.router import api_router, redirect_router
+from app.database import init_db
+from app.urls.router import router as url_router
 
-app = FastAPI(title="URL Shortener")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
 
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-
-app.include_router(api_router, prefix="/api")
-app.include_router(redirect_router)
+app = FastAPI(lifespan=lifespan)
+app.include_router(url_router)
