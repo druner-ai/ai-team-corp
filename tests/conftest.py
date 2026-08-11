@@ -1,47 +1,51 @@
-import asyncio
-from pathlib import Path
-
-import aiosqlite
+"""
+Фикстуры для тестов.
+Используем in-memory SQLite для изоляции тестов.
+"""
 import pytest
-from fastapi import FastAPI
-from httpx import AsyncClient
+import aiosqlite
+from fastapi.testclient import TestClient
+from src.app.main import app
+from src.app.database import get_db, init_db
 
-from src.app.database import get_db
-from src.app.routers import health, redirect, shorten, stats
 
-
-@pytest.fixture(scope="function")
+@pytest.fixture
 async def test_db():
-    """Create an in‑memory SQLite database with the application schema."""
-    conn = await aiosqlite.connect(":memory:")
-    await conn.execute("PRAGMA foreign_keys = ON;")
-    schema_path = Path(__file__).parent.parent / "src" / "app" / "schema.sql"
-    with open(schema_path, "r", encoding="utf-8") as f:
-        schema_sql = f.read()
-    await conn.executescript(schema_sql)
-    await conn.commit()
-    yield conn
-    await conn.close()
+    """Создаёт in-memory БД и инициализирует таблицы."""
+    db = await aiosqlite.connect(":memory:")
+    db.row_factory = aiosqlite.Row
+    # Инициализация схемы
+    await db.execute("PRAGMA journal_mode=WAL")
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS urls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            short_code TEXT UNIQUE NOT NULL,
+            original_url TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS clicks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            short_code TEXT NOT NULL,
+            clicked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            referer TEXT,
+            user_agent TEXT,
+            FOREIGN KEY (short_code) REFERENCES urls(short_code)
+        )
+    """)
+    await db.commit()
+    yield db
+    await db.close()
 
 
-@pytest.fixture(scope="function")
-async def test_app(test_db: aiosqlite.Connection) -> FastAPI:
-    """Build a FastAPI app that uses the test database via dependency override."""
-    app = FastAPI()
-    app.include_router(health.router)
-    app.include_router(shorten.router, prefix="/api/v1")
-    app.include_router(stats.router, prefix="/api/v1")
-    app.include_router(redirect.router)
-
+@pytest.fixture
+async def client(test_db):
+    """Переопределяем зависимость get_db на тестовую БД."""
     async def override_get_db():
         yield test_db
 
     app.dependency_overrides[get_db] = override_get_db
-    return app
-
-
-@pytest.fixture(scope="function")
-async def client(test_app: FastAPI) -> AsyncClient:
-    """Provide an HTTP test client backed by the test application."""
-    async with AsyncClient(app=test_app, base_url="http://test") as ac:
-        yield ac
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
