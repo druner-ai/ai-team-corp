@@ -471,7 +471,86 @@ def main():
     if saved_files:
         print(f"\n  📁 Сохранённые файлы:")
         for name, path in sorted(saved_files.items()):
-            print(f"     {name}")
+            if not name.startswith("task_") and name != "REPORT.md":
+                print(f"     {name}")
+
+    # ── Создать Pull Request ────────────────────────────────────
+    pr_url = None
+    if status == "✅ Успешно":
+        pr_url = create_pr_from_run(run_dir, task, timestamp)
+
+
+def create_pr_from_run(run_dir: Path, task: str, timestamp: str) -> str | None:
+    """Создать ветку, запушить код и открыть PR."""
+    import subprocess
+    import shutil
+    import tempfile
+
+    branch = f"ai-team/{timestamp}"
+    title = task[:80] + ("..." if len(task) > 80 else "")
+
+    try:
+        # 0. Сохраняем текущие изменения перед переключением
+        subprocess.run(["git", "stash", "--include-untracked"], capture_output=True, timeout=10)
+
+        # 1. Создаём ветку от master
+        subprocess.run(["git", "checkout", "master"], capture_output=True, timeout=10)
+        subprocess.run(["git", "checkout", "-b", branch], capture_output=True, timeout=10)
+
+        # 2. Копируем сгенерированный код (только код, не отчёты)
+        code_files = [
+            f for f in run_dir.rglob("*")
+            if f.is_file()
+            and not f.name.startswith("task_")
+            and f.name != "REPORT.md"
+            and "__pycache__" not in str(f)
+        ]
+        for src in code_files:
+            rel = src.relative_to(run_dir)
+            dst = Path.cwd() / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+        # 3. Коммитим
+        subprocess.run(["git", "add", "-A"], capture_output=True, timeout=10)
+        commit_msg = f"🤖 AI-команда: {title}"
+        r = subprocess.run(
+            ["git", "commit", "-m", commit_msg],
+            capture_output=True, text=True, timeout=10
+        )
+        if "nothing to commit" in r.stdout + r.stderr:
+            print(f"\n⚠️ Нет изменений для PR")
+            subprocess.run(["git", "checkout", "master"], capture_output=True, timeout=10)
+            subprocess.run(["git", "branch", "-D", branch], capture_output=True, timeout=10)
+            subprocess.run(["git", "stash", "pop"], capture_output=True, timeout=10)
+            return None
+
+        # 4. Пушим
+        push_result = subprocess.run(
+            ["git", "push", "-u", "origin", branch],
+            capture_output=True, text=True, timeout=30
+        )
+        if push_result.returncode != 0:
+            print(f"\n⚠️ Push failed: {push_result.stderr[:200]}")
+
+        # 5. Создаём PR
+        from gh_pr import create_pr
+        body = f"🤖 Сгенерировано AI-командой\n\n**Задача:** {task}\n**Ветка:** `{branch}`\n**Отчёт:** `{run_dir}/REPORT.md`"
+        pr_url = create_pr(branch, f"🤖 {title}", body)
+        if pr_url:
+            print(f"\n🔀 PR создан: {pr_url}")
+
+        # Возвращаемся на master и восстанавливаем stash
+        subprocess.run(["git", "checkout", "master"], capture_output=True, timeout=10)
+        subprocess.run(["git", "stash", "pop"], capture_output=True, timeout=10)
+        return pr_url
+
+    except Exception as e:
+        print(f"\n⚠️ Ошибка создания PR: {e}")
+        subprocess.run(["git", "checkout", "master"], capture_output=True, timeout=10)
+        subprocess.run(["git", "branch", "-D", branch], capture_output=True, timeout=10)
+        subprocess.run(["git", "stash", "pop"], capture_output=True, timeout=10)
+        return None
 
 
 if __name__ == "__main__":
