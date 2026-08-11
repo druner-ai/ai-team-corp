@@ -1,18 +1,22 @@
 from pydantic import BaseModel, HttpUrl
+from datetime import datetime
+from typing import Optional
+
 
 class URLCreate(BaseModel):
     url: HttpUrl
 
-class URLResponse(BaseModel):
-    short_url: str
-    short_code: str
 
-class URLStats(BaseModel):
+class URLInfo(BaseModel):
+    short_code: str
     original_url: str
-    short_code: str
-    visit_count: int
-    created_at: str
-    last_visited_at: str | None
+    short_url: str
+    created_at: Optional[datetime]
+    last_visited_at: Optional[datetime]
+    visits: int
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
+
+
+class URLStats(URLInfo):
+    pass
