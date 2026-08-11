@@ -1,33 +1,26 @@
-import pytest
-from httpx import AsyncClient
-
-
-@pytest.mark.asyncio
-async def test_shorten_valid_url(client: AsyncClient):
-    response = await client.post("/api/shorten", json={"url": "https://example.com"})
+def test_shorten_valid_url(client):
+    response = client.post("/shorten", json={"url": "https://example.com"})
     assert response.status_code == 201
     data = response.json()
-    assert "code" in data
-    assert data["original_url"] == "https://example.com"
-    assert data["short_url"].startswith("http://testserver/")
+    assert "short_url" in data
+    assert "short_code" in data
+    assert data["short_url"].startswith("http://localhost:8000/")
 
-
-@pytest.mark.asyncio
-async def test_shorten_invalid_url(client: AsyncClient):
-    response = await client.post("/api/shorten", json={"url": "not-a-url"})
+def test_shorten_invalid_url(client):
+    response = client.post("/shorten", json={"url": "not-a-valid-url"})
     assert response.status_code == 422
 
-
-@pytest.mark.asyncio
-async def test_shorten_missing_url(client: AsyncClient):
-    response = await client.post("/api/shorten", json={})
+def test_shorten_missing_url(client):
+    response = client.post("/shorten", json={})
     assert response.status_code == 422
 
-
-@pytest.mark.asyncio
-async def test_shorten_duplicate_url_creates_new_code(client: AsyncClient):
-    response1 = await client.post("/api/shorten", json={"url": "https://example.com"})
-    response2 = await client.post("/api/shorten", json={"url": "https://example.com"})
+def test_shorten_duplicate_url_creates_new_code(client):
+    response1 = client.post("/shorten", json={"url": "https://example.com"})
     assert response1.status_code == 201
+    code1 = response1.json()["short_code"]
+
+    response2 = client.post("/shorten", json={"url": "https://example.com"})
     assert response2.status_code == 201
-    assert response1.json()["code"] != response2.json()["code"]
+    code2 = response2.json()["short_code"]
+
+    assert code1 != code2

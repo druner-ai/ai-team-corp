@@ -1,31 +1,13 @@
-"""
-Pydantic-модели для валидации запросов и ответов API.
-"""
+from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy.sql import func
+from app.database import Base
 
-from datetime import datetime
+class URL(Base):
+    __tablename__ = "urls"
 
-from pydantic import BaseModel, HttpUrl
-
-
-class URLCreateRequest(BaseModel):
-    """Запрос на создание короткой ссылки."""
-
-    url: HttpUrl
-
-
-class URLCreateResponse(BaseModel):
-    """Ответ с созданной короткой ссылкой."""
-
-    short_url: str
-    short_code: str
-    original_url: str
-
-
-class URLStatsResponse(BaseModel):
-    """Ответ со статистикой по ссылке."""
-
-    short_code: str
-    original_url: str
-    created_at: datetime
-    last_accessed_at: datetime | None
-    access_count: int
+    id = Column(Integer, primary_key=True, index=True)
+    original_url = Column(String, nullable=False)
+    short_code = Column(String, unique=True, index=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_visited_at = Column(DateTime(timezone=True), nullable=True)
+    visit_count = Column(Integer, default=0)
