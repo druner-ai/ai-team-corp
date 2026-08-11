@@ -1,0 +1,41 @@
+├── docker-compose.yml
+├── Dockerfile
+├── .env.example
+├── README.md
+├── pyproject.toml
+├── alembic.ini
+├── alembic/
+│   ├── env.py
+│   └── versions/
+│       └── 001_initial.py
+├── src/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── config.py
+│   ├── dependencies.py
+│   ├── models.py
+│   ├── schemas.py
+│   ├── api/
+│   │   ├── __init__.py
+│   │   └── routes.py
+│   ├── db/
+│   │   ├── __init__.py
+│   │   ├── postgres.py
+│   │   └── redis.py
+│   ├── services/
+│   │   ├── __init__.py
+│   │   ├── url_service.py
+│   │   └── id_generator.py
+│   └── utils/
+│       ├── __init__.py
+│       └── url_validator.py
+└── tests/
+    ├── __init__.py
+    ├── conftest.py
+    ├── test_shorten.py
+    ├── test_redirect.py
+    ├── test_stats.py
+    ├── test_delete.py
+    ├── test_rate_limit.py
+    ├── test_url_validator.py
+    └── test_id_generator.py

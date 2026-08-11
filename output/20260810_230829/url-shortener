@@ -1,0 +1,97 @@
+│
+├── app/                                    # Основной код приложения
+│   ├── __init__.py
+│   ├── main.py                             # Точка входа: создание FastAPI app, lifespan, middleware, роутеры
+│   │
+│   ├── core/                               # Сквозная инфраструктура
+│   │   ├── __init__.py
+│   │   ├── config.py                       # Pydantic Settings: env vars, типизация, дефолты
+│   │   ├── logging.py                      # Настройка JSON-логирования, request_id
+│   │   └── exceptions.py                   # Кастомные исключения: UrlNotFoundError, UrlDeactivatedError, RateLimitExceededError
+│   │
+│   ├── api/                                # HTTP-слой
+│   │   ├── __init__.py
+│   │   ├── deps.py                         # Dependency injection: get_db_session, get_redis, get_url_service
+│   │   └── v1/
+│   │       ├── __init__.py
+│   │       ├── router.py                   # Объединение эндпоинтов в APIRouter с prefix /api/v1
+│   │       └── endpoints/
+│   │           ├── __init__.py
+│   │           ├── shorten.py              # POST /shorten
+│   │           ├── redirect.py             # GET /{short_code}
+│   │           ├── stats.py                # GET /stats/{short_code}
+│   │           └── delete.py               # DELETE /{short_code}
+│   │
+│   ├── schemas/                            # Pydantic-модели (DTO для запросов/ответов)
+│   │   ├── __init__.py
+│   │   ├── url.py                          # ShortenRequest, ShortenResponse
+│   │   ├── stats.py                        # StatsResponse
+│   │   └── common.py                       # ErrorResponse, HealthResponse
+│   │
+│   ├── models/                             # SQLAlchemy ORM-модели
+│   │   ├── __init__.py
+│   │   ├── base.py                         # DeclarativeBase, общие mixin (TimestampMixin)
+│   │   ├── url.py                          # Url model
+│   │   └── click.py                        # Click model
+│   │
+│   ├── repositories/                       # Слой доступа к данным (PostgreSQL)
+│   │   ├── __init__.py
+│   │   ├── url_repository.py               # get_by_code, create, deactivate, increment_click_count
+│   │   └── click_repository.py             # create, count_by_url_id
+│   │
+│   ├── services/                           # Бизнес-логика
+│   │   ├── __init__.py
+│   │   ├── url_service.py                  # create_short_url, get_url_by_code, deactivate_url, get_stats
+│   │   ├── click_service.py                # record_click (Redis INCR + BackgroundTask INSERT)
+│   │   └── short_code_generator.py         # generate_short_code() → nanoid(8), retry on collision
+│   │
+│   ├── cache/                              # Слой работы с Redis
+│   │   ├── __init__.py
+│   │   ├── redis_client.py                 # Создание async Redis connection pool
+│   │   └── url_cache.py                    # get_url, set_url, delete_url, get_click_count, incr_click_count
+│   │
+│   ├── middleware/                         # ASGI middleware
+│   │   ├── __init__.py
+│   │   ├── rate_limit.py                   # RateLimitMiddleware: sliding window via Redis ZSET
+│   │   └── request_id.py                   # RequestIdMiddleware: генерация/проброс X-Request-ID
+│   │
+│   └── utils/                              # Утилиты
+│       ├── __init__.py
+│       └── url_validator.py                # validate_url(): проверка http/https, запрет приватных IP
+│
+├── alembic/                                # Миграции БД
+│   ├── env.py                              # Конфигурация Alembic (async engine)
+│   ├── script.py.mako                      # Шаблон миграции
+│   └── versions/
+│       └── 001_initial.py                  # Создание таблиц urls, clicks, индексов
+│
+├── tests/                                  # Тесты (pytest)
+│   ├── __init__.py
+│   ├── conftest.py                         # Фикстуры: test client, test DB, test Redis, cleanup
+│   ├── unit/                               # Unit-тесты (без внешних зависимостей)
+│   │   ├── __init__.py
+│   │   ├── test_short_code_generator.py    # Уникальность, длина, base62
+│   │   ├── test_url_validator.py           # Валидные/невалидные URL, приватные IP
+│   │   └── test_schemas.py                 # Pydantic-валидация запросов/ответов
+│   ├── integration/                        # Integration-тесты (с БД и Redis через testcontainers)
+│   │   ├── __init__.py
+│   │   ├── test_shorten.py                 # POST /shorten: успех, невалидный URL, приватный IP, дубликат
+│   │   ├── test_redirect.py                # GET /{code}: успех, 404, 410 (deactivated), 410 (expired), кэш
+│   │   ├── test_stats.py                   # GET /stats/{code}: успех, 404, click_count
+│   │   ├── test_delete.py                  # DELETE /{code}: успех, 404, идемпотентность
+│   │   └── test_rate_limit.py              # Превышение лимита → 429, Retry-After
+│   └── e2e/                                # Сквозные сценарии
+│       ├── __init__.py
+│       └── test_full_lifecycle.py          # Создать → перенаправить → статистика → удалить → 410
+│
+├── alembic.ini                             # Конфигурация Alembic
+├── pyproject.toml                          # Зависимости, ruff, mypy, pytest config
+├── requirements.txt                        # Production-зависимости (pin versions)
+├── requirements-dev.txt                    # Dev-зависимости (pytest, ruff, mypy)
+├── Dockerfile                              # Multi-stage build: python:3.11-slim
+├── docker-compose.yml                      # app + postgres + redis
+├── docker-compose.test.yml                 # app + postgres + redis для тестов
+├── .env.example                            # Шаблон переменных окружения
+├── .gitignore
+├── Makefile                                # Команды: make test, make lint, make migrate, make run
+└── README.md                               # Инструкция по запуску

@@ -1,0 +1,56 @@
+├── docker-compose.yml
+├── Dockerfile
+├── requirements.txt
+├── alembic.ini
+├── .env.example
+├── README.md
+├── alembic/
+│   ├── env.py
+│   ├── script.py.mako
+│   └── versions/
+│       └── 001_initial.py
+├── app/
+│   ├── __init__.py
+│   ├── main.py                    # FastAPI app, lifespan, middleware registration
+│   ├── config.py                  # Settings (pydantic-settings), env vars
+│   ├── dependencies.py            # FastAPI dependencies (db session, redis)
+│   ├── models/
+│   │   ├── __init__.py
+│   │   └── url_mapping.py         # SQLAlchemy model
+│   ├── schemas/
+│   │   ├── __init__.py
+│   │   ├── url.py                  # Pydantic schemas: ShortenRequest, ShortenResponse, StatsResponse
+│   │   └── common.py               # ErrorResponse, HealthResponse
+│   ├── routers/
+│   │   ├── __init__.py
+│   │   ├── shorten.py              # POST /shorten
+│   │   ├── redirect.py             # GET /{id}
+│   │   ├── stats.py                # GET /stats/{id}
+│   │   ├── delete.py               # DELETE /{id}
+│   │   └── health.py               # GET /health
+│   ├── services/
+│   │   ├── __init__.py
+│   │   ├── url_service.py          # create_short_url, get_original_url, get_stats, delete_url
+│   │   ├── cache_service.py        # Redis get/set/delete wrappers
+│   │   └── stats_service.py        # Increment, sync to PostgreSQL
+│   ├── middleware/
+│   │   ├── __init__.py
+│   │   └── rate_limit.py           # RateLimitMiddleware (Redis-based)
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   ├── short_id.py             # base62 generation, validation
+│   │   └── url_validator.py        # URL scheme validation, SSRF checks
+│   └── db/
+│       ├── __init__.py
+│       ├── session.py              # async engine, sessionmaker
+│       └── redis_client.py         # Redis connection pool
+└── tests/
+    ├── __init__.py
+    ├── conftest.py                 # pytest fixtures: test client, test db, redis mock
+    ├── test_shorten.py
+    ├── test_redirect.py
+    ├── test_stats.py
+    ├── test_delete.py
+    ├── test_rate_limit.py
+    ├── test_validation.py
+    └── test_health.py

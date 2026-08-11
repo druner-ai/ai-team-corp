@@ -1,0 +1,19 @@
+├── Dockerfile
+├── docker-compose.yml
+├── .env.example
+├── pyproject.toml
+├── alembic.ini
+├── README.md
+├── alembic/
+├── src/
+│   ├── main.py
+│   ├── config.py
+│   ├── api/
+│   ├── core/
+│   ├── middleware/
+│   ├── models/
+│   ├── repositories/
+│   ├── schemas/
+│   ├── services/
+│   └── utils/
+└── tests/

@@ -1,0 +1,54 @@
+- `404 Not Found` — ID не существует
+
+---
+
+### DELETE /{id}
+
+**Поведание:** Soft delete — устанавливает `is_deleted = TRUE`, инвалидирует кэш Redis (`DEL url:{short_id}`).
+
+**Ответ (204 No Content):** пустое тело
+
+**Ошибки:**
+- `404 Not Found` — ID не существует
+
+---
+
+### Общие заголовки ответов
+
+- `X-RateLimit-Limit: 100`
+- `X-RateLimit-Remaining: 87`
+- `X-RateLimit-Reset: 1737000000`
+
+При превышении лимита: `429 Too Many Requests` с `Retry-After` заголовком.
+
+---
+
+## 6. Нефункциональные требования
+
+### Безопасность
+- **Валидация URL:** Принимаются только `http` и `https` схемы. Блокировка SSRF: опциональная проверка на private IP диапазоны (10.x, 172.16-31.x, 192.168.x, 127.x).
+- **Rate Limiting:** 100 запросов в минуту на IP. Реализация через Redis sliding window.
+- **SQL Injection:** Использование параметризованных запросов SQLAlchemy ORM.
+- **Secrets:** Все секреты (пароли БД, Redis) через переменные окружения, не в коде.
+- **CORS:** Настраиваемый через env-переменные, по умолчанию `*` для API.
+
+### Производительность
+- **Чтение (редирект):** < 5ms при cache hit в Redis (p99 < 20ms).
+- **Запись (сокращение):** < 50ms (p99 < 100ms) включая проверку коллизии.
+- **Connection pooling:** SQLAlchemy async pool (размер 10, max_overflow 20). Redis connection pool (размер 50).
+- **Асинхронность:** Все I/O операции (БД, Redis) — async, без блокировок event loop.
+
+### Масштабирование
+- **Stateless:** Приложение не хранит состояние — горизонтальное масштабирование за балансировщиком.
+- **Redis:** Может быть кластеризован. Кэш-промахи терпимы (fallback в БД).
+- **PostgreSQL:** Read-replicas для `GET /stats` при росте нагрузки. Партиционирование таблицы `urls` по `created_at` при >10M записей.
+- **Click counter flush:** Background task каждые 30 сек, батч-обновление — снижает нагрузку на БД.
+
+### Надёжность
+- **Graceful Shutdown:** SIGTERM → stop accepting → drain connections (timeout 30s) → flush click counters → close pools → exit.
+- **Health check:** `GET /health` → проверка соединений БД и Redis. `GET /ready` для k8s readiness probe.
+- **Ретраи:** При коллизии short_id — до 3 попыток регенерации.
+
+---
+
+## 7. Структура проекта

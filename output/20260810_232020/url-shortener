@@ -1,0 +1,64 @@
+├── docker-compose.yml
+├── Dockerfile
+├── requirements.txt
+├── alembic.ini
+├── .env.example
+├── README.md
+├── alembic/
+│   ├── env.py
+│   └── versions/
+│       └── 001_initial.py
+├── app/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── config.py
+│   ├── api/
+│   │   ├── __init__.py
+│   │   ├── deps.py
+│   │   └── v1/
+│   │       ├── __init__.py
+│   │       ├── router.py
+│   │       ├── shorten.py
+│   │       ├── redirect.py
+│   │       ├── stats.py
+│   │       └── delete.py
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── security.py
+│   │   ├── rate_limiter.py
+│   │   └── exceptions.py
+│   ├── db/
+│   │   ├── __init__.py
+│   │   ├── session.py
+│   │   └── redis_client.py
+│   ├── models/
+│   │   ├── __init__.py
+│   │   └── url.py
+│   ├── repositories/
+│   │   ├── __init__.py
+│   │   └── url_repository.py
+│   ├── schemas/
+│   │   ├── __init__.py
+│   │   ├── shorten.py
+│   │   └── stats.py
+│   ├── services/
+│   │   ├── __init__.py
+│   │   ├── url_service.py
+│   │   ├── cache_service.py
+│   │   └── code_generator.py
+│   └── utils/
+│       ├── __init__.py
+│       └── base62.py
+└── tests/
+    ├── __init__.py
+    ├── conftest.py
+    ├── unit/
+    │   ├── test_base62.py
+    │   ├── test_url_validation.py
+    │   └── test_code_generator.py
+    └── integration/
+        ├── test_shorten.py
+        ├── test_redirect.py
+        ├── test_stats.py
+        ├── test_delete.py
+        └── test_rate_limiting.py

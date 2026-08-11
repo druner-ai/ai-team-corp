@@ -1,0 +1,17 @@
+import pytest
+from httpx import AsyncClient
+
+@pytest.mark.asyncio
+async def test_soft_delete(app: AsyncClient):
+    # Create
+    payload = {"url": "https://example.com"}
+    create_resp = await app.post("/api/v1/shorten", json=payload)
+    short_id = create_resp.json()["short_id"]
+
+    # Delete
+    del_resp = await app.delete(f"/api/v1/{short_id}")
+    assert del_resp.status_code == 204
+
+    # Redirect should now be 404
+    redirect_resp = await app.get(f"/api/v1/{short_id}", follow_redirects=False)
+    assert redirect_resp.status_code == 404

@@ -1,0 +1,5 @@
+async def test_rate_limit_headers_exist(app: AsyncClient):
+    payload = {"url": "https://example.com"}
+    resp = await app.post("/api/v1/shorten", json=payload)
+    assert "X-RateLimit-Limit" in resp.headers
+    assert "X-RateLimit-Remaining" in resp.headers

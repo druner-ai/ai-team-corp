@@ -1,0 +1,14 @@
+# url-shortener/README.md
+
+# URL Shortener Microservice
+
+A production-ready URL shortener microservice built with FastAPI, PostgreSQL, and Redis.
+
+## Quick Start
+
+### Prerequisites
+- Docker and Docker Compose installed on your system
+
+### Running the Application
+
+1. Clone the repository and navigate to the project directory:
