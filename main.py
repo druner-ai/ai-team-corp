@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """
-AI Team Corporation v1.2 — оркестратор AI-команды разработки.
+AI Team Corporation v2.0 — оркестратор AI-команды разработки.
 
 Архитектор (GLM-5.2) → Разработчик (DeepSeek V4 Pro) + QA архитектуры (параллельно)
     → QA кода (Codestral 2508) → правки (макс 1 цикл) → DevOps (DeepSeek V4 Pro)
 
-Фиксы v1.2:
-- QA: DeepSeek Flash → Codestral 2508 (лучше находит баги)
-- DevOps: DeepSeek Flash → DeepSeek V4 Pro (стабильнее)
-- deploy: автоопределение имени сервиса (не хардкод app/web)
-- deploy: host-fallback для тестов, если нет в контейнере
-- tasks: DevOps промпт — без url-shortener, с COPY tests, без version
+v2.0:
+- output_pydantic (JSON) вместо regex markdown-парсинга
+- _write_file_safe: единая функция записи с обработкой коллизий
+- JSON-first extraction, regex-fallback
 
 Использование:
     uv run python main.py "Создай REST API для блога..."
@@ -37,7 +35,7 @@ from tasks import make_tasks
 
 # ─── global state ─────────────────────────────────────────────
 
-_all_outputs: list[tuple[str, str, str]] = []  # (task_name, agent_role, output)
+_all_outputs: list[tuple[str, str, str, dict]] = []  # (task_name, agent_role, raw_output, json_dict)
 _total_cost: float = 0.0
 _total_tokens_in: int = 0
 _total_tokens_out: int = 0
@@ -55,7 +53,7 @@ def on_task_complete(output: TaskOutput):
     json_output = output.json_dict or {}
 
     # Сохраняем вывод
-    _all_outputs.append((task_name, agent_role, raw_output))
+    _all_outputs.append((task_name, agent_role, raw_output, json_output))
 
     # Пытаемся достать token usage из ответа модели
     usage = json_output.get("usage") or json_output.get("token_usage") or {}
@@ -101,34 +99,73 @@ def _role_to_model_key(role: str) -> str:
 
 # ─── artifact saver ────────────────────────────────────────────
 
-def _is_valid_filepath(filepath: str) -> bool:
-    """Проверить, похож ли путь на реальный файл."""
-    # Имена без расширения, но с путём
-    special_names = {"Dockerfile", "Makefile", "docker-compose.yml", "docker-compose.yaml",
-                     ".env.example", ".gitignore", "README.md", "LICENSE", "requirements.txt",
-                     "pyproject.toml"}
-    if filepath in special_names or filepath.split("/")[-1] in special_names:
-        return True
-    # Должен содержать / (директорию) или заканчиваться известным расширением
-    valid_extensions = {".py", ".md", ".yml", ".yaml", ".toml", ".txt", ".env", ".sh", 
-                        ".json", ".cfg", ".ini", ".example", ".sql", ".html", ".css", ".js"}
-    has_slash = "/" in filepath
-    has_ext = any(filepath.endswith(ext) for ext in valid_extensions)
-    if not (has_slash or has_ext):
-        return False
-    # Не markdown-артефакты
-    if filepath.startswith("*") or filepath.startswith("┌") or filepath.startswith("│"):
-        return False
-    # Не SQL/JSON строки
-    if filepath.startswith("DATABASE_URL") or filepath.startswith("{"):
-        return False
-    if filepath.startswith("@") and not has_slash:
-        return False
-    return True
+def _write_file_safe(run_dir: Path, filepath: str, content: str) -> Path | None:
+    """Безопасно записать файл, обрабатывая коллизии имён."""
+    # Нормализуем путь
+    if filepath.startswith("path/to/"):
+        filepath = filepath.replace("path/to/", "", 1)
+    filepath = filepath.strip("`*\"'")
+
+    full_path = run_dir / filepath
+
+    # Пропускаем директории
+    if full_path.is_dir():
+        return None
+    # Файл уже существует — коллизия
+    if full_path.exists() and full_path.is_file():
+        alt = str(full_path) + ".collision"
+        Path(alt).write_text(content)
+        return Path(alt)
+
+    # Создаём родительские директории
+    try:
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        # Какой-то из предков — файл. Переименовываем.
+        for ancestor in full_path.parents:
+            if ancestor.is_file():
+                ancestor.rename(str(ancestor) + ".file")
+                break
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+
+    full_path.write_text(content)
+    return full_path
+
+
+def _extract_files_json(raw_output: str, run_dir: Path) -> dict[str, Path]:
+    """Извлечь файлы из JSON-вывода (output_pydantic). Возвращает {} если не JSON."""
+    saved = {}
+    try:
+        data = json.loads(raw_output)
+    except (json.JSONDecodeError, TypeError):
+        return saved
+
+    files = data.get("files", [])
+    if not isinstance(files, list):
+        return saved
+
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        filepath = entry.get("path", "")
+        content = entry.get("content", "")
+        if not filepath or not content:
+            continue
+        result = _write_file_safe(run_dir, filepath, content)
+        if result:
+            saved[filepath] = result
+
+    return saved
 
 
 def _extract_files(text: str, run_dir: Path) -> dict[str, Path]:
-    """Извлечь файлы из markdown-блоков с путями."""
+    """Извлечь файлы: сначала пробуем JSON, затем regex-парсинг markdown."""
+    # Сначала JSON (output_pydantic)
+    saved = _extract_files_json(text, run_dir)
+    if saved:
+        return saved
+
+    # Fallback: regex-парсинг markdown блоков
     saved = {}
     pattern = re.compile(
         r'```(?:python|dockerfile|yaml|yml|json|toml|env|markdown|md|text|sql|sh|bash)?\s+(\S+)\n(.*?)```',
@@ -142,38 +179,12 @@ def _extract_files(text: str, run_dir: Path) -> dict[str, Path]:
         skip_labels = {"python", "dockerfile", "yaml", "json", "markdown", "bash", "text", "sql", "sh"}
         if filepath in skip_labels:
             continue
-        # Игнорируем слишком короткое содержимое
         if len(content) < 20:
             continue
-        # Убираем markdown-разметку из имени файла
-        filepath = filepath.strip("`*\"'")
-        # Проверяем, похоже ли на реальный путь
-        if not _is_valid_filepath(filepath):
-            continue
 
-        # Нормализуем путь
-        if filepath.startswith("path/to/"):
-            filepath = filepath.replace("path/to/", "", 1)
-
-        full_path = run_dir / filepath
-        # Пропускаем если это существующая директория
-        if full_path.is_dir():
-            continue
-        # Если путь уже существует как файл (не директория) — конфликт имён
-        if full_path.exists() and full_path.is_file():
-            saved[filepath + ".collision"] = full_path
-            continue
-        try:
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-        except FileExistsError:
-            # Какой-то из предков — файл. Переименовываем и пробуем снова.
-            for ancestor in full_path.parents:
-                if ancestor.is_file():
-                    ancestor.rename(str(ancestor) + ".file")
-                    break
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(content)
-        saved[filepath] = full_path
+        result = _write_file_safe(run_dir, filepath, content)
+        if result:
+            saved[filepath] = result
 
     return saved
 
@@ -181,7 +192,7 @@ def _extract_files(text: str, run_dir: Path) -> dict[str, Path]:
 def save_all_artifacts(run_dir: Path) -> dict[str, Path]:
     """Извлечь файлы из ВСЕХ сохранённых выводов задач."""
     all_files = {}
-    for i, (task_name, agent_role, raw_output) in enumerate(_all_outputs):
+    for i, (task_name, agent_role, raw_output, json_dict) in enumerate(_all_outputs):
         extracted = _extract_files(raw_output, run_dir)
         all_files.update(extracted)
         # Также сохраняем сырой вывод каждой задачи
@@ -198,7 +209,7 @@ def save_report(run_dir: Path, metrics: dict, deploy_report: str = "") -> Path:
 
     # Собираем summary всех задач
     tasks_summary = ""
-    for i, (task_name, agent_role, raw_output) in enumerate(_all_outputs):
+    for i, (task_name, agent_role, raw_output, json_dict) in enumerate(_all_outputs):
         preview = raw_output[:300] + "..." if len(raw_output) > 300 else raw_output
         tasks_summary += f"\n### Шаг {i+1}: {agent_role}\n{preview}\n"
 

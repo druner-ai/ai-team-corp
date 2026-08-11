@@ -1,9 +1,11 @@
 """
 Задачи для каждой роли AI-команды.
+v2.0 — structured output через output_pydantic (JSON вместо regex markdown-парсинга).
 """
 
 from crewai import Task
 from agents import architect, developer, qa_gate, devops
+from output_models import CodeOutput
 
 
 def make_tasks(task_description: str) -> list[Task]:
@@ -38,9 +40,23 @@ def make_tasks(task_description: str) -> list[Task]:
         description="""
         Напиши код строго по архитектурному документу, который создал Архитектор.
 
-        ТРЕБОВАНИЯ:
-        - Весь код в одном ответе (не по частям)
-        - Каждый файл в markdown-блоке с указанием пути: ```python path/to/file.py
+        ВАЖНО — ФОРМАТ ОТВЕТА:
+        Ты должен вернуть JSON с полем files — массив объектов, каждый с полями path и content.
+        Пример:
+        {
+          "files": [
+            {"path": "app/main.py", "content": "from fastapi import FastAPI\\n..."},
+            {"path": "requirements.txt", "content": "fastapi==0.110.0\\n..."},
+            {"path": "tests/test_api.py", "content": "import pytest\\n..."}
+          ]
+        }
+
+        ПРАВИЛА ДЛЯ ПУТЕЙ:
+        - Каждый путь ДОЛЖЕН иметь расширение файла (.py, .md, .txt, .json, .yml, .toml)
+        - Примеры ПРАВИЛЬНЫХ путей: "app/main.py", "tests/__init__.py", "Dockerfile"
+        - Примеры НЕПРАВИЛЬНЫХ: "app" (нет расширения), "notes_api" (нет расширения)
+
+        ТРЕБОВАНИЯ К КОДУ:
         - Включай requirements.txt или pyproject.toml
         - Включай тесты (pytest)
         - Включай .env.example
@@ -52,10 +68,9 @@ def make_tasks(task_description: str) -> list[Task]:
         - Обработка ошибок (не голые try/except)
         - Валидация входных данных
         """,
-        expected_output="Полная кодовая база: каждый файл в отдельном markdown-блоке "
-                       "с указанием пути. Код рабочий, типизированный, "
-                       "с тестами и документацией.",
+        expected_output="JSON с полем files — массив всех файлов проекта с путями и содержимым.",
         agent=developer,
+        output_pydantic=CodeOutput,
     )
 
     qa_code_task = Task(
@@ -89,44 +104,50 @@ def make_tasks(task_description: str) -> list[Task]:
         description="""
         QA Gate нашёл проблемы в твоём коде. Исправь ИСКЛЮЧИТЕЛЬНО то, что указано в отчёте QA.
 
+        ВАЖНО — ФОРМАТ ОТВЕТА:
+        Верни JSON с полем files — массив ВСЕХ файлов (исправленных + неизменённых).
+        Каждый файл: {{"path": "...", "content": "..."}}
+
         ПРАВИЛА:
         - Исправляй только проблемы с приоритетом 🔴 и 🟡
         - 🟢 (минор) — только если есть время и это не меняет архитектуру
         - НЕ переписывай код с нуля — точечные правки
-        - После исправления выложи полную кодовую базу заново (все файлы)
-
-        В ответе укажи: что исправлено и почему (одна строка на каждое исправление).
+        - Верни ПОЛНУЮ кодовую базу (все файлы), а не только исправленные
+        - В поле content первого файла добавь комментарий с перечнем исправлений
         """,
-        expected_output="Исправленная кодовая база (все файлы заново) + список исправлений.",
+        expected_output="JSON с полем files — полная кодовая база с исправлениями.",
         agent=developer,
+        output_pydantic=CodeOutput,
     )
 
     docker_task = Task(
         description="""
         Упакуй готовое решение в Docker.
 
+        ВАЖНО — ФОРМАТ ОТВЕТА:
+        Верни JSON с полем files — массив объектов с path и content.
+        Пример: {{"files": [{{"path": "Dockerfile", "content": "FROM python:3.11..."}}]}}
+
         ЧТО СДЕЛАТЬ:
-        1. **Dockerfile**: multi-stage build, в корне проекта
-        2. **docker-compose.yml**: все сервисы, в корне проекта
-        3. **.env.example**: все переменные, в корне проекта
-        4. **README.md**: как запустить, в корне проекта
-        5. **Healthcheck**: для каждого сервиса
+        - Dockerfile (multi-stage build)
+        - docker-compose.yml (все сервисы)
+        - .env.example (все переменные)
+        - README.md (как запустить)
 
         ВАЖНО — Dockerfile:
         - Копируй ВЕСЬ код приложения (app/, tests/, alembic/ и т.д.)
-        - ОБЯЗАТЕЛЬНО добавь `COPY tests/ ./tests/` — тесты должны быть в образе
+        - ОБЯЗАТЕЛЬНО добавь COPY tests/ ./tests/ — тесты должны быть в образе
         - Установи pytest и все тестовые зависимости
 
         ПРАВИЛА:
         - Не используй latest-теги — фиксируй версии
         - Не копируй .env в образ
         - Используй не-root пользователя в контейнере
-        - НЕ указывай `version` в docker-compose.yml (Compose V2 не требует)
-        - Все файлы клади в корень, не в подпапки
+        - НЕ указывай version в docker-compose.yml (Compose V2 не требует)
         """,
-        expected_output="Dockerfile, docker-compose.yml, .env.example, README.md — "
-                       "каждый в отдельном markdown-блоке с указанием пути.",
+        expected_output="JSON с полем files — Dockerfile, docker-compose.yml, .env.example, README.md.",
         agent=devops,
+        output_pydantic=CodeOutput,
     )
 
     return [architecture_doc, coding_task, qa_code_task, fix_task, docker_task]
