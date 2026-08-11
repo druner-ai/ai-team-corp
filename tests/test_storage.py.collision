@@ -1,0 +1,121 @@
+"""
+Модульные тесты для JSONStorage.
+
+Проверяют логику работы с файловым хранилищем напрямую.
+"""
+
+import pytest
+
+from app.models import NoteCreate, NoteUpdate
+from app.storage import JSONStorage
+
+
+@pytest.mark.asyncio
+async def test_initialize_creates_file(temp_storage: JSONStorage) -> None:
+    """Тест, что initialize создает файл, если его нет."""
+    import os
+
+    assert os.path.exists(temp_storage.file_path)
+    with open(temp_storage.file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    assert content == "[]"
+
+
+@pytest.mark.asyncio
+async def test_read_all_empty(temp_storage: JSONStorage) -> None:
+    """Тест чтения пустого хранилища."""
+    notes = await temp_storage.read_all()
+    assert notes == []
+
+
+@pytest.mark.asyncio
+async def test_create_note(temp_storage: JSONStorage) -> None:
+    """Тест создания заметки."""
+    note_data = NoteCreate(title="Заголовок", content="Содержимое")
+    note = await temp_storage.create_note(note_data)
+
+    assert note.id == 1
+    assert note.title == "Заголовок"
+    assert note.content == "Содержимое"
+    assert note.created_at is not None
+    assert note.updated_at is not None
+
+
+@pytest.mark.asyncio
+async def test_get_note_found(temp_storage: JSONStorage) -> None:
+    """Тест получения существующей заметки."""
+    note_data = NoteCreate(title="Тест", content="Контент")
+    created = await temp_storage.create_note(note_data)
+
+    found = await temp_storage.get_note(created.id)
+    assert found is not None
+    assert found.id == created.id
+    assert found.title == "Тест"
+
+
+@pytest.mark.asyncio
+async def test_get_note_not_found(temp_storage: JSONStorage) -> None:
+    """Тест получения несуществующей заметки."""
+    found = await temp_storage.get_note(999)
+    assert found is None
+
+
+@pytest.mark.asyncio
+async def test_update_note(temp_storage: JSONStorage) -> None:
+    """Тест обновления заметки."""
+    note_data = NoteCreate(title="Старый", content="Старый контент")
+    created = await temp_storage.create_note(note_data)
+
+    update_data = NoteUpdate(title="Новый", content="Новый контент")
+    updated = await temp_storage.update_note(created.id, update_data)
+
+    assert updated is not None
+    assert updated.title == "Новый"
+    assert updated.content == "Новый контент"
+    assert updated.updated_at > created.updated_at
+
+
+@pytest.mark.asyncio
+async def test_update_note_not_found(temp_storage: JSONStorage) -> None:
+    """Тест обновления несуществующей заметки."""
+    update_data = NoteUpdate(title="Новый")
+    result = await temp_storage.update_note(999, update_data)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_delete_note(temp_storage: JSONStorage) -> None:
+    """Тест удаления заметки."""
+    note_data = NoteCreate(title="Для удаления", content="Будет удалена")
+    created = await temp_storage.create_note(note_data)
+
+    result = await temp_storage.delete_note(created.id)
+    assert result is True
+
+    # Проверяем, что заметка действительно удалена
+    found = await temp_storage.get_note(created.id)
+    assert found is None
+
+
+@pytest.mark.asyncio
+async def test_delete_note_not_found(temp_storage: JSONStorage) -> None:
+    """Тест удаления несуществующей заметки."""
+    result = await temp_storage.delete_note(999)
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_id_increment(temp_storage: JSONStorage) -> None:
+    """Тест последовательной генерации ID."""
+    note1 = await temp_storage.create_note(NoteCreate(title="1", content="1"))
+    note2 = await temp_storage.create_note(NoteCreate(title="2", content="2"))
+    note3 = await temp_storage.create_note(NoteCreate(title="3", content="3"))
+
+    assert note1.id == 1
+    assert note2.id == 2
+    assert note3.id == 3
+
+    # Удаляем заметку 2 и проверяем, что следующий ID = 4 (максимальный + 1)
+    await temp_storage.delete_note(2)
+    note4 = await temp_storage.create_note(NoteCreate(title="4", content="4"))
+    assert note4.id == 4
