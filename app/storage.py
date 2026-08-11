@@ -1,0 +1,240 @@
+"""
+Сервисный слой для работы с файловым хранилищем notes.json.
+
+Обеспечивает потокобезопасное чтение и запись данных с использованием asyncio.Lock.
+"""
+
+import asyncio
+import json
+import logging
+import os
+from datetime import datetime, timezone
+from typing import Any
+
+import aiofiles
+
+from app.models import Note, NoteCreate, NoteUpdate
+
+logger = logging.getLogger(__name__)
+
+
+class JSONStorage:
+    """
+    Асинхронное хранилище заметок в формате JSON.
+
+    Attributes:
+        file_path: Путь к файлу хранилища.
+        lock: Асинхронная блокировка для предотвращения гонок данных.
+    """
+
+    def __init__(self, file_path: str = "notes.json") -> None:
+        """
+        Инициализация хранилища.
+
+        Args:
+            file_path: Путь к JSON-файлу с данными.
+        """
+        self.file_path: str = file_path
+        self.lock: asyncio.Lock = asyncio.Lock()
+
+    async def initialize(self) -> None:
+        """
+        Инициализация файла хранилища.
+
+        Если файл не существует, создает его с пустым массивом.
+        """
+        if not os.path.exists(self.file_path):
+            logger.info(f"Файл {self.file_path} не найден, создаю новый с пустым массивом.")
+            async with aiofiles.open(self.file_path, mode="w", encoding="utf-8") as f:
+                await f.write("[]")
+        else:
+            logger.info(f"Файл {self.file_path} уже существует.")
+
+    async def _read_file(self) -> list[dict[str, Any]]:
+        """
+        Чтение всего содержимого файла хранилища.
+
+        Returns:
+            Список словарей с данными заметок.
+
+        Raises:
+            FileNotFoundError: Если файл не существует.
+            json.JSONDecodeError: Если файл содержит некорректный JSON.
+        """
+        try:
+            async with aiofiles.open(self.file_path, mode="r", encoding="utf-8") as f:
+                content = await f.read()
+                if not content.strip():
+                    return []
+                return json.loads(content)
+        except FileNotFoundError:
+            logger.error(f"Файл {self.file_path} не найден при чтении.")
+            raise
+        except json.JSONDecodeError as e:
+            logger.error(f"Ошибка декодирования JSON в файле {self.file_path}: {e}")
+            raise ValueError(f"Файл данных поврежден: {e}") from e
+
+    async def _write_file(self, data: list[dict[str, Any]]) -> None:
+        """
+        Запись данных в файл хранилища.
+
+        Args:
+            data: Список словарей для сохранения.
+
+        Raises:
+            IOError: При ошибке записи в файл.
+        """
+        try:
+            async with aiofiles.open(self.file_path, mode="w", encoding="utf-8") as f:
+                await f.write(json.dumps(data, ensure_ascii=False, indent=2, default=str))
+        except IOError as e:
+            logger.error(f"Ошибка записи в файл {self.file_path}: {e}")
+            raise
+
+    @staticmethod
+    def _dict_to_note(item: dict[str, Any]) -> Note:
+        """
+        Преобразование словаря в объект Note.
+
+        Args:
+            item: Словарь с данными заметки.
+
+        Returns:
+            Объект Note.
+        """
+        # Парсинг ISO-формата дат, если они пришли как строки
+        for field in ("created_at", "updated_at"):
+            if isinstance(item.get(field), str):
+                item[field] = datetime.fromisoformat(item[field].replace("Z", "+00:00"))
+        return Note(**item)
+
+    @staticmethod
+    def _note_to_dict(note: Note) -> dict[str, Any]:
+        """
+        Преобразование объекта Note в словарь для сериализации.
+
+        Args:
+            note: Объект заметки.
+
+        Returns:
+            Словарь с ISO-форматом дат.
+        """
+        data = note.model_dump()
+        # Преобразование datetime в ISO строку
+        data["created_at"] = note.created_at.isoformat().replace("+00:00", "Z")
+        data["updated_at"] = note.updated_at.isoformat().replace("+00:00", "Z")
+        return data
+
+    async def read_all(self) -> list[Note]:
+        """
+        Получение всех заметок.
+
+        Returns:
+            Список объектов Note.
+        """
+        async with self.lock:
+            data = await self._read_file()
+            return [self._dict_to_note(item) for item in data]
+
+    async def get_note(self, note_id: int) -> Note | None:
+        """
+        Получение заметки по ID.
+
+        Args:
+            note_id: Идентификатор заметки.
+
+        Returns:
+            Объект Note или None, если заметка не найдена.
+        """
+        async with self.lock:
+            data = await self._read_file()
+            for item in data:
+                if item.get("id") == note_id:
+                    return self._dict_to_note(item)
+            return None
+
+    async def create_note(self, note_data: NoteCreate) -> Note:
+        """
+        Создание новой заметки.
+
+        Args:
+            note_data: Данные для создания заметки.
+
+        Returns:
+            Созданный объект Note.
+        """
+        async with self.lock:
+            data = await self._read_file()
+
+            # Генерация нового ID: максимальный существующий + 1, либо 1 для пустого списка
+            if data:
+                new_id = max(item.get("id", 0) for item in data) + 1
+            else:
+                new_id = 1
+
+            now = datetime.now(timezone.utc)
+            note = Note(
+                id=new_id,
+                title=note_data.title,
+                content=note_data.content,
+                created_at=now,
+                updated_at=now,
+            )
+
+            data.append(self._note_to_dict(note))
+            await self._write_file(data)
+            logger.info(f"Создана заметка с ID={new_id}")
+            return note
+
+    async def update_note(self, note_id: int, note_data: NoteUpdate) -> Note | None:
+        """
+        Обновление существующей заметки.
+
+        Args:
+            note_id: ID заметки для обновления.
+            note_data: Новые данные (частичное обновление).
+
+        Returns:
+            Обновленный объект Note или None, если заметка не найдена.
+        """
+        async with self.lock:
+            data = await self._read_file()
+
+            for i, item in enumerate(data):
+                if item.get("id") == note_id:
+                    # Обновляем только переданные поля
+                    update_dict = note_data.model_dump(exclude_unset=True)
+                    item.update(update_dict)
+                    item["updated_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+                    data[i] = item
+                    await self._write_file(data)
+
+                    note = self._dict_to_note(item)
+                    logger.info(f"Обновлена заметка с ID={note_id}")
+                    return note
+
+            return None
+
+    async def delete_note(self, note_id: int) -> bool:
+        """
+        Удаление заметки по ID.
+
+        Args:
+            note_id: ID заметки для удаления.
+
+        Returns:
+            True, если заметка была удалена, False — если не найдена.
+        """
+        async with self.lock:
+            data = await self._read_file()
+
+            original_length = len(data)
+            data = [item for item in data if item.get("id") != note_id]
+
+            if len(data) == original_length:
+                return False
+
+            await self._write_file(data)
+            logger.info(f"Удалена заметка с ID={note_id}")
+            return True
