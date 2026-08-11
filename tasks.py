@@ -6,6 +6,10 @@ v2.1 — DevOps генерирует CI/CD.
 from crewai import Task
 from agents import architect, developer, qa_gate, devops
 from output_models import CodeOutput
+from patterns import load_patterns
+
+# Загружаем паттерны один раз при импорте
+_patterns = load_patterns()
 
 
 def make_tasks(task_description: str) -> list[Task]:
@@ -65,6 +69,10 @@ def make_tasks(task_description: str) -> list[Task]:
           * Применяй схему из sql/init.sql или создавай таблицы inline
           * Используй fixture scope="function" — новая БД на каждый тест
           * Для FastAPI dependency override используй app.dependency_overrides
+
+        ПАТТЕРНЫ ТЕСТИРОВАНИЯ (обязательно следуй):
+        {_patterns['pytest']}
+
         КРИТИЧНО — ЗАВИСИМОСТИ ДЛЯ ТЕСТОВ:
         Все библиотеки, которые импортируются в tests/ (httpx, pytest-asyncio, aiosqlite,
         freezegun и т.д.), ДОЛЖНЫ быть в requirements-dev.txt. DevOps будет использовать
@@ -164,6 +172,9 @@ def make_tasks(task_description: str) -> list[Task]:
 
         НЕ генерируй: README.md, .env.example, .gitignore — они уже есть от Разработчика.
         Сфокусируйся только на Docker и CI.
+
+        ПАТТЕРНЫ DOCKER И CI/CD (обязательно следуй):
+        {_patterns['docker']}
 
         ВАЖНО — CI/CD (.github/workflows/ci.yml):
         - actions/setup-python@v5, python 3.12
