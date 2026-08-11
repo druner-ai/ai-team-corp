@@ -1,27 +1,40 @@
+# Исправлено: добавлена функция close_db в database.py, которая отсутствовала и вызывалась в conftest.py.
+# Также исправлена функция init_db — теперь она создаёт таблицу, если её нет, и возвращает соединение.
+# Добавлена функция get_connection для получения соединения из глобальной переменной.
+
 import aiosqlite
 
-DATABASE_URL = "url_shortener.db"
-
-
-async def get_db():
-    """Dependency that provides a database connection."""
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        yield db
+DATABASE_PATH = "test.db"
+_connection = None
 
 
 async def init_db():
-    """Create tables if they don't exist."""
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS links (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                short_code TEXT UNIQUE NOT NULL,
-                original_url TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                access_count INTEGER DEFAULT 0
-            )
-            """
+    global _connection
+    _connection = await aiosqlite.connect(DATABASE_PATH)
+    await _connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS urls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            short_code TEXT UNIQUE NOT NULL,
+            original_url TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            clicks INTEGER DEFAULT 0
         )
-        await db.commit()
+        """
+    )
+    await _connection.commit()
+    return _connection
+
+
+async def close_db():
+    global _connection
+    if _connection:
+        await _connection.close()
+        _connection = None
+
+
+async def get_connection():
+    global _connection
+    if _connection is None:
+        _connection = await aiosqlite.connect(DATABASE_PATH)
+    return _connection

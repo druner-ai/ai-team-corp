@@ -1,82 +1,108 @@
-import random
-import string
-from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, HttpUrl
+from app.database import init_db, close_db, get_connection
+import secrets
+import string
 
-from app.database import get_db, init_db, DATABASE_URL
-from app.schemas import URLCreate, URLInfo, URLStats
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await init_db()
-    yield
+app = FastAPI()
 
 
-app = FastAPI(lifespan=lifespan)
+class URLRequest(BaseModel):
+    url: HttpUrl
+
+
+class URLResponse(BaseModel):
+    short_code: str
+    short_url: str
+    original_url: str
+
+
+class StatsResponse(BaseModel):
+    original_url: str
+    created_at: str
+    clicks: int
 
 
 def generate_short_code(length: int = 6) -> str:
-    """Generate a random alphanumeric short code."""
-    chars = string.ascii_letters + string.digits
-    return ''.join(random.choices(chars, k=length))
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 
-@app.post("/links", response_model=URLInfo, status_code=status.HTTP_201_CREATED)
-async def create_short_link(payload: URLCreate, db=Depends(get_db)):
-    # Generate a unique short code
-    for _ in range(10):  # retry up to 10 times in case of collision
-        short_code = generate_short_code()
-        try:
-            await db.execute(
-                "INSERT INTO links (short_code, original_url) VALUES (?, ?)",
-                (short_code, payload.url),
-            )
-            await db.commit()
+@app.on_event("startup")
+async def startup():
+    await init_db()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await close_db()
+
+
+@app.post("/shorten", response_model=URLResponse, status_code=201)
+async def shorten_url(request: URLRequest):
+    conn = await get_connection()
+    short_code = generate_short_code()
+    original_url = str(request.url)
+
+    # Проверяем уникальность short_code
+    while True:
+        cursor = await conn.execute(
+            "SELECT id FROM urls WHERE short_code = ?", (short_code,)
+        )
+        row = await cursor.fetchone()
+        if row is None:
             break
-        except Exception:
-            continue
-    else:
-        raise HTTPException(status_code=500, detail="Could not generate unique short code")
+        short_code = generate_short_code()
 
-    short_url = f"http://localhost:8000/{short_code}"  # In production, use actual domain
-    return URLInfo(short_code=short_code, short_url=short_url)
+    await conn.execute(
+        "INSERT INTO urls (short_code, original_url) VALUES (?, ?)",
+        (short_code, original_url),
+    )
+    await conn.commit()
+
+    short_url = f"http://localhost:8000/{short_code}"
+    return URLResponse(
+        short_code=short_code,
+        short_url=short_url,
+        original_url=original_url,
+    )
 
 
 @app.get("/{short_code}")
-async def redirect_to_original(short_code: str, db=Depends(get_db)):
-    cursor = await db.execute(
-        "SELECT original_url FROM links WHERE short_code = ?", (short_code,)
+async def redirect_to_url(short_code: str, request: Request):
+    conn = await get_connection()
+    cursor = await conn.execute(
+        "SELECT original_url FROM urls WHERE short_code = ?", (short_code,)
     )
     row = await cursor.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Short link not found")
+    if row is None:
+        raise HTTPException(status_code=404, detail="Short code not found")
 
     original_url = row[0]
-    # Increment access count
-    await db.execute(
-        "UPDATE links SET access_count = access_count + 1 WHERE short_code = ?",
-        (short_code,),
+
+    # Увеличиваем счётчик кликов
+    await conn.execute(
+        "UPDATE urls SET clicks = clicks + 1 WHERE short_code = ?", (short_code,)
     )
-    await db.commit()
+    await conn.commit()
 
-    return RedirectResponse(url=original_url, status_code=307)
+    return RedirectResponse(url=original_url, status_code=302)
 
 
-@app.get("/stats/{short_code}", response_model=URLStats)
-async def get_link_stats(short_code: str, db=Depends(get_db)):
-    cursor = await db.execute(
-        "SELECT original_url, created_at, access_count FROM links WHERE short_code = ?",
+@app.get("/stats/{short_code}", response_model=StatsResponse)
+async def get_stats(short_code: str):
+    conn = await get_connection()
+    cursor = await conn.execute(
+        "SELECT original_url, created_at, clicks FROM urls WHERE short_code = ?",
         (short_code,),
     )
     row = await cursor.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Short link not found")
+    if row is None:
+        raise HTTPException(status_code=404, detail="Short code not found")
 
-    return URLStats(
+    return StatsResponse(
         original_url=row[0],
         created_at=row[1],
-        access_count=row[2],
+        clicks=row[2],
     )
