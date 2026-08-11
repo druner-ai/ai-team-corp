@@ -6,26 +6,22 @@
 
 - `GET /health` — возвращает статус, uptime и версию.
 
-## Быстрый старт
+## Быстрый старт с Docker Compose
 
-### Локально
+1. Скопируйте `.env.example` в `.env` и при необходимости измените переменные:
+   ```bash
+   cp .env.example .env
+   ```
 
-```bash
-pip install -r requirements-dev.txt
-make run
-```
+2. Запустите сервис:
+   ```bash
+   docker compose up -d
+   ```
 
-Проверка:
-```bash
-curl http://localhost:8000/health
-```
-
-### Docker
-
-```bash
-make docker-build
-docker run -p 8000:8000 health-check-service:1.0.0
-```
+3. Проверьте работоспособность:
+   ```bash
+   curl http://localhost:8000/health
+   ```
 
 ## Переменные окружения
 
@@ -35,14 +31,21 @@ docker run -p 8000:8000 health-check-service:1.0.0
 | `ENVIRONMENT`  | Окружение (development/prod) | `development`  |
 | `LOG_LEVEL`    | Уровень логирования          | `INFO`         |
 
+## Локальная разработка (без Docker)
+
+```bash
+pip install -r requirements-dev.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
 ## Тестирование
 
 ```bash
-make test
+pytest tests/ -v
 ```
 
 ## Линтинг
 
 ```bash
-make lint
+ruff check app/ tests/
 ```

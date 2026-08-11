@@ -1,0 +1,44 @@
+# Multi-stage build for Health Check Service
+# Stage 1: Builder - installs all dependencies into a virtual environment
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+
+# Install build dependencies if needed (none for pure Python)
+COPY requirements.txt requirements-dev.txt ./
+
+# Create a virtual environment and install all dependencies (including dev)
+RUN python -m venv /opt/venv && \
+    /opt/venv/bin/pip install --no-cache-dir -r requirements-dev.txt
+
+# Stage 2: Runtime - minimal production image with tests included
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install curl for healthcheck
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
+
+# Copy application code and tests
+COPY app/ ./app/
+COPY tests/ ./tests/
+
+# Create non-root user
+RUN useradd -m appuser && chown -R appuser:appuser /app
+USER appuser
+
+# Make sure we use the virtual environment
+ENV PATH="/opt/venv/bin:$PATH"
+
+EXPOSE 8000
+
+# Healthcheck using curl
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
