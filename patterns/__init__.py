@@ -1,7 +1,7 @@
 """Загрузчик паттернов для AI-агентов."""
 from pathlib import Path
 
-PATTERNS_DIR = Path(__file__).parent / "patterns"
+PATTERNS_DIR = Path(__file__).parent
 
 
 def load_patterns() -> dict[str, str]:
