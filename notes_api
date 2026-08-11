@@ -1,0 +1,6 @@
+├── main.py              # Точка входа, инициализация FastAPI, настройка CORS, запуск Uvicorn
+├── models.py            # Pydantic модели (Note, NoteCreate, NoteUpdate)
+├── storage.py           # Логика работы с notes.json (чтение, запись, блокировки, генерация ID)
+├── requirements.txt     # Зависимости (fastapi, uvicorn, aiofiles, pydantic)
+├── notes.json           # Файл хранилища (создается автоматически при первом запуске)
+└── README.md            # Инструкция по запуску
