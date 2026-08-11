@@ -93,7 +93,8 @@ def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool
     # Whitelist по ролям
     role_lower = role.lower()
     if "test designer" in role_lower:
-        if not (p.parts[0] == "tests" or p.parts[0] == "test"):
+        # Test Designer пишет в tests/ + pytest.ini (конфиг для тестов)
+        if not (p.parts[0] == "tests" or p.parts[0] == "test" or p.name == "pytest.ini"):
             return None
     elif "devops" in role_lower:
         allowed = {"dockerfile", "docker-compose.yml", ".dockerignore", ".github", ".env.example", "readme.md"}
@@ -136,11 +137,53 @@ def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool
 
 
 def _extract_files_json(raw_output: str, run_dir: Path, protect_tests: bool = False, role: str = "") -> dict[str, Path]:
-    """Извлечь файлы из JSON-вывода (output_pydantic). Возвращает {} если не JSON."""
+    """Извлечь файлы из JSON-вывода (output_pydantic). Возвращает {} если не JSON.
+
+    Поддерживает два формата:
+    1. Чистый JSON в raw_output
+    2. JSON, вложенный в markdown (после ## Результат)
+    """
     saved = {}
+    data = None
+
+    # Пробуем прямой парсинг
     try:
         data = json.loads(raw_output)
     except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Если не получилось — ищем JSON в markdown
+    if data is None:
+        import re
+        # Ищем JSON после "## Результат" (сырой вывод агента)
+        result_marker = raw_output.find("## Результат")
+        if result_marker != -1:
+            after_result = raw_output[result_marker:]
+            # Берём первый JSON-блок после ## Результат
+            match = re.search(r'\{.*\}', after_result, re.DOTALL)
+            if match:
+                try:
+                    data = json.loads(match.group())
+                except json.JSONDecodeError:
+                    # Пробуем найти следующий JSON-блок
+                    match2 = re.search(r'\{.*\}', after_result[match.end():], re.DOTALL)
+                    if match2:
+                        try:
+                            data = json.loads(match2.group())
+                        except json.JSONDecodeError:
+                            return saved
+                    else:
+                        return saved
+        else:
+            # Нет маркера — пробуем любой JSON
+            match = re.search(r'\{.*\}', raw_output, re.DOTALL)
+            if match:
+                try:
+                    data = json.loads(match.group())
+                except json.JSONDecodeError:
+                    return saved
+
+    if data is None:
         return saved
 
     files = data.get("files", [])
@@ -254,15 +297,31 @@ def save_all_artifacts(run_dir: Path) -> dict[str, Path]:
         task_file.write_text(f"# {agent_role}\n\n## Задача\n{task_name}\n\n## Результат\n\n{raw_output}")
         all_files[f"task_{i:02d}_{agent_role}.md"] = task_file
 
-    # Финальная сборка: копируем файлы из последней успешной волны в корень run_dir
-    # Это то, что пойдёт в PR и Docker
-    if last_wave_dir:
-        import shutil
-        for item in last_wave_dir.rglob("*"):
+    # Финальная сборка: собираем из ключевых этапов, а не только последней волны.
+    # Код (stage_02_dev или stage_04_fix если fix был) + тесты (stage_01_tests) + DevOps (stage_05_devops).
+    # Это устраняет проблему наслоения: два conftest.py, мёртвый груз от старых волн.
+    final_stages = []
+
+    # Определяем, какой этап содержит код (fix перезаписывает dev)
+    code_stage = run_dir / "stage_04_fix" if (run_dir / "stage_04_fix").exists() and any((run_dir / "stage_04_fix").iterdir()) else run_dir / "stage_02_dev"
+    if code_stage.exists():
+        final_stages.append(code_stage)
+
+    tests_stage = run_dir / "stage_01_tests"
+    if tests_stage.exists() and any(tests_stage.iterdir()):
+        final_stages.append(tests_stage)
+
+    devops_stage = run_dir / "stage_05_devops"
+    if devops_stage.exists():
+        final_stages.append(devops_stage)
+
+    for stage in final_stages:
+        for item in stage.rglob("*"):
             if item.is_file():
-                rel = item.relative_to(last_wave_dir)
+                rel = item.relative_to(stage)
                 dest = run_dir / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
+                import shutil
                 shutil.copy2(item, dest)
                 all_files[str(rel)] = dest
 
