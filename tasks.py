@@ -1,6 +1,6 @@
 """
 Задачи для каждой роли AI-команды.
-v2.0 — structured output через output_pydantic (JSON вместо regex markdown-парсинга).
+v2.1 — DevOps генерирует CI/CD.
 """
 
 from crewai import Task
@@ -122,7 +122,7 @@ def make_tasks(task_description: str) -> list[Task]:
 
     docker_task = Task(
         description="""
-        Упакуй готовое решение в Docker.
+        Упакуй готовое решение в Docker и настрой CI/CD.
 
         ВАЖНО — ФОРМАТ ОТВЕТА:
         Верни JSON с полем files — массив объектов с path и content.
@@ -133,9 +133,18 @@ def make_tasks(task_description: str) -> list[Task]:
         - docker-compose.yml (все сервисы)
         - .env.example (все переменные)
         - README.md (как запустить)
+        - .github/workflows/ci.yml (GitHub Actions CI/CD)
+
+        ВАЖНО — CI/CD (.github/workflows/ci.yml):
+        - actions/setup-python@v5, python 3.12
+        - Установка: python -m venv .venv && pip install -r requirements.txt && pip install pytest
+        - Тесты: .venv/bin/pytest tests/ -v --tb=short
+        - БЕЗ || true — тесты должны падать честно
+        - Триггеры: push на master и ai-team/**, pull_request на master
+        - Добавь build job: docker build если есть Dockerfile
 
         ВАЖНО — Dockerfile:
-        - Копируй ВЕСЬ код приложения (app/, tests/, alembic/ и т.д.)
+        - Копируй ВЕСЬ код приложения (app/, tests/, и т.д.)
         - ОБЯЗАТЕЛЬНО добавь COPY tests/ ./tests/ — тесты должны быть в образе
         - Установи pytest и все тестовые зависимости
 
@@ -145,7 +154,7 @@ def make_tasks(task_description: str) -> list[Task]:
         - Используй не-root пользователя в контейнере
         - НЕ указывай version в docker-compose.yml (Compose V2 не требует)
         """,
-        expected_output="JSON с полем files — Dockerfile, docker-compose.yml, .env.example, README.md.",
+        expected_output="JSON с полем files — Dockerfile, docker-compose.yml, .env.example, README.md, CI/CD.",
         agent=devops,
         output_pydantic=CodeOutput,
     )
