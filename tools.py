@@ -19,7 +19,7 @@ def run_tests(code_directory: str) -> str:
     Returns:
         Результат запуска тестов: stdout + stderr. Ищи строки "passed", "failed", "error".
     """
-    code_dir = Path(code_directory)
+    code_dir = Path(code_directory).resolve()
     if not code_dir.exists():
         return f"ERROR: Directory {code_directory} does not exist"
 
@@ -97,7 +97,7 @@ def run_tests_quiet(code_directory: str) -> tuple[bool, str]:
 
     Используется оркестратором как гейт: PR создаётся только при passed=True.
     """
-    code_dir = Path(code_directory)
+    code_dir = Path(code_directory).resolve()
     if not code_dir.exists():
         return False, f"Directory {code_directory} does not exist"
 
