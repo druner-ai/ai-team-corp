@@ -531,6 +531,7 @@ def create_pr_from_run(run_dir: Path, task: str, timestamp: str) -> str | None:
             and f.name != "REPORT.md"
             and f.name not in (".env", ".env.example", ".gitignore")
             and "__pycache__" not in str(f)
+            and ".venv" not in str(f)
         ]
         for src in code_files:
             rel = src.relative_to(run_dir)
