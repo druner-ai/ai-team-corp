@@ -59,9 +59,10 @@ def make_tasks(task_description: str) -> list[Task]:
         ТРЕБОВАНИЯ К КОДУ:
         - Включай requirements.txt (все runtime-зависимости)
         - Включай requirements-dev.txt (все test-зависимости: pytest, httpx, pytest-asyncio, aiosqlite и т.д.)
+        - Включай pytest.ini или conftest.py в корне с настройкой pythonpath (иначе CI не найдёт модули)
         - Включай тесты (pytest)
         - Включай .env.example
-        - Если в архитектурном документе есть неясности — отметь в комментариях кода
+        - Если в архитектурном документе есть неясности — принимай разумное решение и документируй его
 
         КРИТИЧНО — ЗАВИСИМОСТИ ДЛЯ ТЕСТОВ:
         Все библиотеки, которые импортируются в tests/ (httpx, pytest-asyncio, aiosqlite,
@@ -164,6 +165,15 @@ def make_tasks(task_description: str) -> list[Task]:
         - БЕЗ || true — тесты должны падать честно
         - Триггеры: push на master и ai-team/**, pull_request на master
         - Добавь build job: docker build если есть Dockerfile
+
+        КРИТИЧНО — PYTHONPATH:
+        В корне проекта ДОЛЖЕН быть pytest.ini или conftest.py с настройкой pythonpath.
+        Пример pytest.ini:
+        [pytest]
+        pythonpath = .
+        Или conftest.py в корне:
+        import sys; sys.path.insert(0, '.')
+        Без этого pytest не найдёт модули app/ в CI.
 
         КРИТИЧНО — ЗАВИСИМОСТИ ДЛЯ ТЕСТОВ:
         Разработчик ДОЛЖЕН был создать requirements-dev.txt со всеми test-зависимостями.
