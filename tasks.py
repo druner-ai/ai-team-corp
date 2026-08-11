@@ -109,6 +109,11 @@ def make_tasks(task_description: str) -> list[Task]:
         - Каждый путь ДОЛЖЕН иметь расширение файла (.py, .md, .txt, .json, .yml, .toml)
         - Примеры ПРАВИЛЬНЫХ путей: "app/main.py", "app/urls/router.py", "Dockerfile"
         - Примеры НЕПРАВИЛЬНЫХ: "app" (нет расширения), "notes_api" (нет расширения)
+        - КРИТИЧНО: НЕ создавай файл и директорию с ОДНИМ именем
+          (например, "app/database.py" и "app/database/" — конфликт!)
+        - Если нужен пакет "app/database", создавай ТОЛЬКО директорию "app/database/"
+          с файлами внутри (например, "app/database/connection.py", "app/database/__init__.py")
+        - Если нужен модуль "app/database", создавай ТОЛЬКО файл "app/database.py"
 
         ПАТТЕРНЫ АРХИТЕКТУРЫ (обязательно следуй):
         {_patterns['architecture']}
