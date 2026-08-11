@@ -1,39 +1,19 @@
-"""
-Фикстуры для тестов.
-Используем in-memory SQLite для изоляции тестов.
-"""
+# Fixed import: changed from src.app.main to app.main because the project structure does not have a src directory.
+# Also added proper test database fixture with in-memory SQLite and dependency override.
 import pytest
 import aiosqlite
 from fastapi.testclient import TestClient
-from src.app.main import app
-from src.app.database import get_db, init_db
+from app.main import app
+from app.database import get_db
+from app.models import CREATE_TABLE_URLS, CREATE_TABLE_CLICKS
 
 
 @pytest.fixture
 async def test_db():
-    """Создаёт in-memory БД и инициализирует таблицы."""
     db = await aiosqlite.connect(":memory:")
     db.row_factory = aiosqlite.Row
-    # Инициализация схемы
-    await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS urls (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            short_code TEXT UNIQUE NOT NULL,
-            original_url TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS clicks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            short_code TEXT NOT NULL,
-            clicked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            referer TEXT,
-            user_agent TEXT,
-            FOREIGN KEY (short_code) REFERENCES urls(short_code)
-        )
-    """)
+    await db.execute(CREATE_TABLE_URLS)
+    await db.execute(CREATE_TABLE_CLICKS)
     await db.commit()
     yield db
     await db.close()
@@ -41,10 +21,10 @@ async def test_db():
 
 @pytest.fixture
 async def client(test_db):
-    """Переопределяем зависимость get_db на тестовую БД."""
+    # Disable lifespan to avoid creating file DB
+    app.router.lifespan_context = None
     async def override_get_db():
-        yield test_db
-
+        return test_db
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as c:
         yield c

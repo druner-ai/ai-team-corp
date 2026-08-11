@@ -1,0 +1,19 @@
+CREATE_TABLE_URLS = """
+CREATE TABLE IF NOT EXISTS urls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    short_code TEXT UNIQUE NOT NULL,
+    original_url TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+CREATE_TABLE_CLICKS = """
+CREATE TABLE IF NOT EXISTS clicks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    short_code TEXT NOT NULL,
+    clicked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    referer TEXT,
+    user_agent TEXT,
+    FOREIGN KEY (short_code) REFERENCES urls(short_code)
+);
+"""
