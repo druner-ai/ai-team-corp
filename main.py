@@ -99,7 +99,7 @@ def _role_to_model_key(role: str) -> str:
 
 # ─── artifact saver ────────────────────────────────────────────
 
-def _write_file_safe(run_dir: Path, filepath: str, content: str) -> Path | None:
+def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool = False) -> Path | None:
     """Безопасно записать файл, обрабатывая коллизии имён."""
     # Нормализуем путь
     if filepath.startswith("path/to/"):
@@ -111,8 +111,11 @@ def _write_file_safe(run_dir: Path, filepath: str, content: str) -> Path | None:
     # Пропускаем директории
     if full_path.is_dir():
         return None
-    # Файл уже существует — коллизия
+    # Файл уже существует
     if full_path.exists() and full_path.is_file():
+        if overwrite:
+            full_path.write_text(content)
+            return full_path
         alt = str(full_path) + ".collision"
         Path(alt).write_text(content)
         return Path(alt)
@@ -151,7 +154,7 @@ def _extract_files_json(raw_output: str, run_dir: Path) -> dict[str, Path]:
         content = entry.get("content", "")
         if not filepath or not content:
             continue
-        result = _write_file_safe(run_dir, filepath, content)
+        result = _write_file_safe(run_dir, filepath, content, overwrite=True)
         if result:
             saved[filepath] = result
 
@@ -363,7 +366,7 @@ def deploy_and_verify(run_dir: Path) -> str:
                 host_tests = (run_dir / "tests").exists()
                 if host_tests:
                     r2 = subprocess.run(
-                        f"cd {run_dir} && python3 -m pytest tests/ -v --tb=short 2>&1",
+                        f"cd {run_dir} && PYTHONPATH=. {sys.executable} -m pytest tests/ -v --tb=short 2>&1",
                         shell=True, capture_output=True, text=True, timeout=120
                     )
                     report_lines.append(r2.stdout.strip()[:2000])
