@@ -202,4 +202,4 @@ def make_tasks(task_description: str) -> list[Task]:
         output_pydantic=CodeOutput,
     )
 
-    return [architecture_doc, coding_task, qa_code_task, fix_task, docker_task]
+    return [architecture_doc, coding_task, review_task, fix_task, docker_task]
