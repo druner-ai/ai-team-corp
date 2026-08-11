@@ -30,7 +30,7 @@ from crewai import Crew, Process
 from crewai.tasks.task_output import TaskOutput
 
 from config import MODELS, FALLBACK_MODEL, MAX_BUDGET_USD, MAX_REVIEW_CYCLES, MAX_CI_FIX_ATTEMPTS, OUTPUT_DIR, VERSION
-from agents import architect, developer, qa_gate, devops
+from agents import architect, test_designer, developer, qa_gate, devops
 from tasks import make_tasks
 
 # ─── global state ─────────────────────────────────────────────
@@ -181,7 +181,8 @@ def save_all_artifacts(run_dir: Path) -> dict[str, Path]:
     """Извлечь файлы из выводов задач, которые реально производят файлы."""
     all_files = {}
     # Роли, которые реально производят файлы (не Архитектор, не QA)
-    FILE_PRODUCING_ROLES = {"разработ", "devops"}
+    # Test Designer производит тесты, Разработчик — код, DevOps — инфраструктуру
+    FILE_PRODUCING_ROLES = {"test designer", "разработ", "devops"}
 
     for i, (task_name, agent_role, raw_output, json_dict) in enumerate(_all_outputs):
         role_lower = agent_role.lower()
@@ -451,7 +452,7 @@ def main():
     tasks = make_tasks(task)
 
     crew = Crew(
-        agents=[architect, developer, qa_gate, devops],
+        agents=[architect, test_designer, developer, qa_gate, devops],
         tasks=tasks,
         process=Process.sequential,
         task_callback=on_task_complete,

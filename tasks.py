@@ -1,10 +1,10 @@
 """
 Задачи для каждой роли AI-команды.
-v2.1 — DevOps генерирует CI/CD.
+v3.0 — TDD: Test Designer пишет тесты ДО кода, Разработчик пишет код под тесты.
 """
 
 from crewai import Task
-from agents import architect, developer, qa_gate, devops
+from agents import architect, test_designer, developer, qa_gate, devops
 from output_models import CodeOutput
 from patterns import load_patterns
 
@@ -40,49 +40,91 @@ def make_tasks(task_description: str) -> list[Task]:
         agent=architect,
     )
 
-    coding_task = Task(
-        description="""
-        Напиши код строго по архитектурному документу, который создал Архитектор.
+    # TDD Этап 1: Test Designer пишет тесты ПО АРХИТЕКТУРЕ, не видя кода
+    test_design_task = Task(
+        description=f"""
+        Ты получил архитектурный документ. Напиши ПОЛНЫЙ набор тестов,
+        которые описывают ПОВЕДЕНИЕ системы. Ты НЕ ВИДИШЬ код реализации —
+        тесты должны быть независимы от того, как Разработчик напишет код.
 
         ВАЖНО — ФОРМАТ ОТВЕТА:
         Ты должен вернуть JSON с полем files — массив объектов, каждый с полями path и content.
         Пример:
-        {
+        {{
           "files": [
-            {"path": "app/main.py", "content": "from fastapi import FastAPI\\n..."},
-            {"path": "requirements.txt", "content": "fastapi==0.110.0\\n..."},
-            {"path": "tests/test_api.py", "content": "import pytest\\n..."}
+            {{"path": "tests/conftest.py", "content": "import pytest\\n..."}},
+            {{"path": "tests/test_health.py", "content": "import pytest\\n..."}},
+            {{"path": "tests/test_create_url.py", "content": "import pytest\\n..."}}
           ]
-        }
+        }}
 
         ПРАВИЛА ДЛЯ ПУТЕЙ:
-        - Каждый путь ДОЛЖЕН иметь расширение файла (.py, .md, .txt, .json, .yml, .toml)
-        - Примеры ПРАВИЛЬНЫХ путей: "app/main.py", "tests/__init__.py", "Dockerfile"
-        - Примеры НЕПРАВИЛЬНЫХ: "app" (нет расширения), "notes_api" (нет расширения)
-
-        ТРЕБОВАНИЯ К КОДУ:
-        - Включай requirements.txt (все runtime-зависимости)
-        - Включай requirements-dev.txt (все test-зависимости: pytest, httpx, pytest-asyncio, aiosqlite и т.д.)
-        - Включай pytest.ini или conftest.py в корне с настройкой pythonpath
-        - КРИТИЧНО: conftest.py ДОЛЖЕН инициализировать БД для тестов (см. шаблон в templates/conftest_sqlite_no_orm.py)
-          * Используй in-memory SQLite (:memory:) для скорости и изоляции
-          * Применяй схему из sql/init.sql или создавай таблицы inline
-          * Используй fixture scope="function" — новая БД на каждый тест
-          * Для FastAPI dependency override используй app.dependency_overrides
+        - Все тесты в директории tests/
+        - conftest.py — fixtures (БД, client)
+        - test_*.py — тесты для каждого endpoint
+        - Каждый путь ДОЛЖЕН иметь расширение .py
 
         ПАТТЕРНЫ ТЕСТИРОВАНИЯ (обязательно следуй):
         {_patterns['pytest']}
 
-        КРИТИЧНО — DEPENDENCY INJECTION:
-        - Все функции-обработчики ДОЛЖНЫ получать БД через Depends(get_db)
-        - ЗАПРЕЩЕНО использовать глобальные переменные для подключения к БД
-        - get_db() должна быть generator function (yield, не return)
-        - Тесты подменяют БД через app.dependency_overrides[get_db] — это работает только с DI
+        ТРЕБОВАНИЯ К ТЕСТАМ:
+        - Каждый тест проверяет КОНТРАКТ: "система ДОЛЖНА вернуть X при Y"
+        - Проверяй и status code, и JSON response
+        - Включи тесты на ошибки (404, 422, 400)
+        - conftest.py ДОЛЖЕН инициализировать БД (in-memory SQLite)
+        - Используй scope="function" — новая БД на каждый тест
+        - Используй app.dependency_overrides для подмены БД
+        - НЕ пиши код реализации — только тесты
 
-        КРИТИЧНО — ЗАВИСИМОСТИ ДЛЯ ТЕСТОВ:
-        Все библиотеки, которые импортируются в tests/ (httpx, pytest-asyncio, aiosqlite,
-        freezegun и т.д.), ДОЛЖНЫ быть в requirements-dev.txt. DevOps будет использовать
-        этот файл для CI. Если тест импортирует модуль — он должен быть установлен.
+        КРИТИЧНО — НЕЗАВИСИМОСТЬ:
+        Ты НЕ ЗНАЕШЬ, какой код напишет Разработчик. Тесты должны быть
+        написаны так, чтобы они проходили с ЛЮБОЙ корректной реализацией,
+        которая соответствует архитектурному документу.
+        """,
+        expected_output="JSON с полем files — тесты (conftest.py + test_*.py) по архитектурному документу.",
+        agent=test_designer,
+        output_pydantic=CodeOutput,
+    )
+
+    # TDD Этап 2: Разработчик пишет код, который ПРОХОДИТ тесты
+    coding_task = Task(
+        description=f"""
+        Напиши код, который ПРОХОДИТ тесты Test Designer'а.
+        Тесты — это контракт. Код должен соответствовать контракту, а не наоборот.
+
+        ВАЖНО — ФОРМАТ ОТВЕТА:
+        Ты должен вернуть JSON с полем files — массив объектов, каждый с полями path и content.
+        Пример:
+        {{
+          "files": [
+            {{"path": "app/main.py", "content": "from fastapi import FastAPI\\n..."}},
+            {{"path": "app/urls/router.py", "content": "from fastapi import APIRouter\\n..."}},
+            {{"path": "requirements.txt", "content": "fastapi==0.110.0\\n..."}},
+            {{"path": "requirements-dev.txt", "content": "pytest==8.0.0\\nhttpx==0.27.0\\n..."}},
+            {{"path": "pytest.ini", "content": "[pytest]\\npythonpath = .\\n..."}}
+          ]
+        }}
+
+        ПРАВИЛА ДЛЯ ПУТЕЙ:
+        - Каждый путь ДОЛЖЕН иметь расширение файла (.py, .md, .txt, .json, .yml, .toml)
+        - Примеры ПРАВИЛЬНЫХ путей: "app/main.py", "app/urls/router.py", "Dockerfile"
+        - Примеры НЕПРАВИЛЬНЫХ: "app" (нет расширения), "notes_api" (нет расширения)
+
+        ПАТТЕРНЫ АРХИТЕКТУРЫ (обязательно следуй):
+        {_patterns['architecture']}
+
+        ТРЕБОВАНИЯ К КОДУ:
+        - Код ДОЛЖЕН проходить тесты Test Designer'а — это контракт
+        - Если тест требует 201 — возвращай 201, не 200
+        - Если тест требует поле 'short_code' — возвращай именно 'short_code'
+        - Если тест требует 404 — возвращай 404, не 400
+        - Включай requirements.txt (все runtime-зависимости)
+        - Включай requirements-dev.txt (все test-зависимости: pytest, httpx, pytest-asyncio, aiosqlite)
+        - Включай pytest.ini с секцией [pytest] и pythonpath = .
+        - КРИТИЧНО: используй FastAPI dependency injection для БД (Depends(get_db))
+        - ЗАПРЕЩЕНО: глобальные переменные для подключения к БД
+        - get_db() должна быть generator function (yield, не return)
+        - Тесты подменяют БД через app.dependency_overrides — это работает только с DI
 
         КАЧЕСТВО:
         - Типизация (type hints) на всех публичных функциях
@@ -90,14 +132,14 @@ def make_tasks(task_description: str) -> list[Task]:
         - Обработка ошибок (не голые try/except)
         - Валидация входных данных
         """,
-        expected_output="JSON с полем files — массив всех файлов проекта с путями и содержимым.",
+        expected_output="JSON с полем files — код проекта, который проходит тесты Test Designer'а.",
         agent=developer,
         output_pydantic=CodeOutput,
     )
 
     review_task = Task(
         description="""
-        Проверь код Разработчика на соответствие архитектурному документу Архитектора.
+        Проверь, что код Разработчика ПРОХОДИТ тесты Test Designer'а.
 
         КРИТИЧНО — ЗАПУСК ТЕСТОВ:
         1. Используй инструмент run_tests с путём к директории с кодом
@@ -106,12 +148,11 @@ def make_tasks(task_description: str) -> list[Task]:
 
         ЧТО ПРОВЕРЯТЬ:
         1. **Запуск тестов**: run_tests — все ли проходят? (ОБЯЗАТЕЛЬНО)
-        2. **Соответствие архитектуре**: все ли компоненты реализованы? Нет ли лишнего?
+        2. **Соответствие тестам**: код проходит ВСЕ тесты Test Designer'а?
         3. **Безопасность**: SQL-инъекции, XSS, утечки секретов, небезопасные зависимости
         4. **Обработка ошибок**: все ли исключения обработаны? Нет ли голых try/except?
         5. **Валидация**: проверяются ли входные данные на всех endpoint-ах?
-        6. **Тесты**: есть ли они? Покрывают ли основные сценарии?
-        7. **Style guide**: PEP 8, нейминг, типизация
+        6. **Style guide**: PEP 8, нейминг, типизация
 
         ФОРМАТ ОТВЕТА:
         Для каждой найденной проблемы:
@@ -129,20 +170,24 @@ def make_tasks(task_description: str) -> list[Task]:
 
     fix_task = Task(
         description="""
-        QA Gate нашёл проблемы в твоём коде. Исправь ИСКЛЮЧИТЕЛЬНО то, что указано в отчёте QA.
+        QA Gate нашёл проблемы: код не проходит тесты Test Designer'а.
+        Исправь код, чтобы он ПРОХОДИЛ тесты. Тесты — это контракт, не трогай их.
 
         ВАЖНО — ФОРМАТ ОТВЕТА:
         Верни JSON с полем files — массив ВСЕХ файлов (исправленных + неизменённых).
         Каждый файл: {{"path": "...", "content": "..."}}
 
         ПРАВИЛА:
-        - Исправляй только проблемы с приоритетом 🔴 и 🟡
-        - 🟢 (минор) — только если есть время и это не меняет архитектуру
+        - Исправляй ТОЛЬКО код, НЕ трогай тесты — тесты определяют контракт
+        - Если тест требует 201 — возвращай 201
+        - Если тест требует поле 'short_code' — возвращай 'short_code'
+        - Если тест падает с KeyError — проверь, что возвращаешь все поля из теста
+        - Если тест падает с 500 — проверь, что БД инициализирована через DI
         - НЕ переписывай код с нуля — точечные правки
         - Верни ПОЛНУЮ кодовую базу (все файлы), а не только исправленные
         - В поле content первого файла добавь комментарий с перечнем исправлений
         """,
-        expected_output="JSON с полем files — полная кодовая база с исправлениями.",
+        expected_output="JSON с полем files — полная кодовая база с исправлениями (тесты не тронуты).",
         agent=developer,
         output_pydantic=CodeOutput,
     )
@@ -221,4 +266,4 @@ def make_tasks(task_description: str) -> list[Task]:
         output_pydantic=CodeOutput,
     )
 
-    return [architecture_doc, coding_task, review_task, fix_task, docker_task]
+    return [architecture_doc, test_design_task, coding_task, review_task, fix_task, docker_task]
