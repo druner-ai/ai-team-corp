@@ -1,0 +1,22 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_PATH=/data/links.db
+      - BASE_URL=http://localhost:8000
+      - CACHE_TTL=600
+      - CORS_ORIGINS=
+      - LOG_LEVEL=INFO
+    volumes:
+      - db_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  db_data:
