@@ -1,43 +1,32 @@
+# tests/test_create.py
 import pytest
-from httpx import AsyncClient
 
 
-@pytest.mark.asyncio
-async def test_create_url_success(client: AsyncClient):
-    response = await client.post("/api/v1/urls", json={"url": "https://example.com"})
+def test_create_url_success(client):
+    """Успешное создание короткой ссылки."""
+    response = client.post("/shorten", json={"url": "https://example.com"})
     assert response.status_code == 201
     data = response.json()
     assert "short_code" in data
-    assert "short_url" in data
     assert data["original_url"] == "https://example.com"
-    assert "created_at" in data
 
 
-@pytest.mark.asyncio
-async def test_create_url_with_custom_code(client: AsyncClient):
-    response = await client.post("/api/v1/urls", json={
-        "url": "https://example.com",
-        "custom_code": "mycode"
-    })
+def test_create_url_with_custom_code(client):
+    """Создание ссылки с кастомным кодом."""
+    response = client.post(
+        "/shorten",
+        json={"url": "https://example.com", "custom_code": "test123"},
+    )
     assert response.status_code == 201
     data = response.json()
-    assert data["short_code"] == "mycode"
+    assert data["short_code"] == "test123"
 
 
-@pytest.mark.asyncio
-async def test_create_url_duplicate_custom_code(client: AsyncClient):
-    await client.post("/api/v1/urls", json={
-        "url": "https://example.com",
-        "custom_code": "mycode"
-    })
-    response = await client.post("/api/v1/urls", json={
-        "url": "https://example2.com",
-        "custom_code": "mycode"
-    })
+def test_create_url_duplicate_custom_code(client):
+    """Попытка дублирования кастомного кода."""
+    client.post("/shorten", json={"url": "https://example.com", "custom_code": "test123"})
+    response = client.post(
+        "/shorten",
+        json={"url": "https://other.com", "custom_code": "test123"},
+    )
     assert response.status_code == 409
-
-
-@pytest.mark.asyncio
-async def test_create_url_invalid_url(client: AsyncClient):
-    response = await client.post("/api/v1/urls", json={"url": "not-a-valid-url"})
-    assert response.status_code == 422

@@ -1,15 +1,13 @@
+# tests/test_stats.py
 import pytest
-from httpx import AsyncClient
 
 
-@pytest.mark.asyncio
-async def test_stats_for_existing_link(client: AsyncClient):
-    # Создаём URL
-    create_response = await client.post("/api/v1/urls", json={"url": "https://example.com"})
-    short_code = create_response.json()["short_code"]
-    
-    # Получаем статистику
-    response = await client.get(f"/api/v1/urls/{short_code}/stats")
+def test_stats_for_existing_link(client):
+    """Получение статистики для существующей ссылки."""
+    create_resp = client.post("/shorten", json={"url": "https://example.com"})
+    short_code = create_resp.json()["short_code"]
+
+    response = client.get(f"/{short_code}/stats")
     assert response.status_code == 200
     data = response.json()
     assert data["short_code"] == short_code
@@ -18,23 +16,21 @@ async def test_stats_for_existing_link(client: AsyncClient):
     assert "created_at" in data
 
 
-@pytest.mark.asyncio
-async def test_stats_after_clicks(client: AsyncClient):
-    # Создаём URL
-    create_response = await client.post("/api/v1/urls", json={"url": "https://example.com"})
-    short_code = create_response.json()["short_code"]
-    
-    # Делаем несколько переходов
+def test_stats_after_clicks(client):
+    """Проверка статистики после нескольких переходов."""
+    create_resp = client.post("/shorten", json={"url": "https://example.com"})
+    short_code = create_resp.json()["short_code"]
+
+    # Делаем 3 перехода
     for _ in range(3):
-        await client.get(f"/api/v1/{short_code}", follow_redirects=False)
-    
-    # Проверяем статистику
-    response = await client.get(f"/api/v1/urls/{short_code}/stats")
+        client.get(f"/{short_code}", follow_redirects=False)
+
+    response = client.get(f"/{short_code}/stats")
     assert response.status_code == 200
     assert response.json()["clicks"] == 3
 
 
-@pytest.mark.asyncio
-async def test_stats_not_found(client: AsyncClient):
-    response = await client.get("/api/v1/urls/nonexistent/stats")
+def test_stats_not_found(client):
+    """Попытка получить статистику для несуществующей ссылки."""
+    response = client.get("/nonexistent/stats")
     assert response.status_code == 404

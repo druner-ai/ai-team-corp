@@ -1,25 +1,28 @@
+# tests/conftest.py
+# ИСПРАВЛЕНИЯ:
+# 1. Добавлена фикстура для инициализации тестовой БД перед каждым тестом
+# 2. Используется временная БД в памяти (:memory:) для изоляции тестов
+# 3. Добавлен TestClient с правильным lifespan
+
+import os
 import pytest
-import pytest_asyncio
-from httpx import AsyncClient, ASGITransport
-from app.main import app
-from app.urls.repository import URLRepository
+from fastapi.testclient import TestClient
+
+# Устанавливаем тестовую БД до импорта приложения
+os.environ["DB_PATH"] = ":memory:"
+
+from app.main import app, init_db
 
 
-@pytest_asyncio.fixture
-async def client():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-
-
-@pytest_asyncio.fixture(autouse=True)
-async def setup_db():
-    repo = URLRepository(db_path=":memory:")
-    await repo.init_db()
-    # Переопределяем репозиторий в приложении для использования in-memory БД
-    app.dependency_overrides[get_repository] = lambda: repo
+@pytest.fixture(autouse=True)
+def setup_db():
+    """Инициализация БД перед каждым тестом."""
+    init_db()
     yield
-    app.dependency_overrides.clear()
 
 
-from app.urls.router import get_repository
+@pytest.fixture
+def client():
+    """Тестовый клиент FastAPI."""
+    with TestClient(app) as c:
+        yield c
