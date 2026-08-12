@@ -29,16 +29,17 @@ load_dotenv("/home/deploy/hermes/data/.env")
 from crewai import Crew, Process
 from crewai.tasks.task_output import TaskOutput
 
-from config import MODELS, FALLBACK_MODEL, MAX_BUDGET_USD, MAX_REVIEW_CYCLES, MAX_CI_FIX_ATTEMPTS, OUTPUT_DIR, VERSION
+from config import MODELS, FALLBACK_MODEL, MAX_BUDGET_USD, MAX_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS, OUTPUT_DIR, VERSION
 from agents import architect, test_designer, developer, qa_gate, devops
-from tasks import make_tasks
+from tasks import make_phase_a_tasks, make_fix_task, make_phase_c_tasks
 from observability import init_log, log_event
 
 # ─── global state ─────────────────────────────────────────────
 
 _all_outputs: list[tuple[str, str, str, dict]] = []  # (task_name, agent_role, raw_output, json_dict)
 _written_files: dict[str, Path] = {}  # манифест всего, что записано на диск
-_RUN_DIR: Path | None = None  # каталог прогона, выставляется в main() до kickoff
+_RUN_DIR: Path | None = None
+_FIX_ATTEMPT: int = 0        # номер текущей попытки починки, 0 — вне цикла правок
 
 # Соответствие имени задачи (name= в tasks.py) стадии и защите тестов.
 # protect_tests=True означает: роль не имеет права писать в tests/**.
@@ -86,6 +87,49 @@ def _parse_pytest_counts(output: str) -> dict:
 
 # ─── callback: захват вывода каждой задачи ────────────────────
 
+def _phase(name: str, agents: list, tasks: list) -> tuple[str, dict]:
+    """Выполнить фазу как отдельный Crew. Возвращает (текст результата, токены).
+
+    Раньше был один kickoff из шести задач: между задачами нельзя было
+    выполнить код, поэтому единственный настоящий гейт стоял после всех ролей,
+    а его вердикт никто не видел. Задача fix выполнялась всегда, devops — тоже,
+    включая прогоны с красными тестами.
+    """
+    log_event({"event": "phase_start", "phase": name, "tasks": [t.name for t in tasks]})
+    print(f"\n{'═' * 54}\nФАЗА {name}: {', '.join(t.name or '?' for t in tasks)}\n{'═' * 54}")
+    crew = Crew(agents=agents, tasks=tasks, process=Process.sequential,
+                task_callback=on_task_complete, verbose=True)
+    t0 = time.time()
+    try:
+        result = crew.kickoff()
+        error = None
+    except Exception as e:
+        result, error = None, f"{type(e).__name__}: {e}"
+        print(f"\n❌ Фаза {name} упала: {error}")
+    usage = getattr(result, "token_usage", None)
+    u = {
+        "tokens_in": getattr(usage, "prompt_tokens", 0) or 0,
+        "tokens_out": getattr(usage, "completion_tokens", 0) or 0,
+    }
+    log_event({"event": "phase_end", "phase": name,
+               "duration": round(time.time() - t0, 1), "error": error, **u})
+    return str(result or error or ""), u
+
+
+def _gate(name: str, run_dir: Path) -> tuple[bool, str]:
+    """Детерминированный гейт: pytest. Единственный источник вердикта."""
+    from tools import run_tests_quiet
+    green, summary = run_tests_quiet(str(run_dir))
+    # Ключ вердикта — green, не passed: у pytest есть своё passed (число тестов),
+    # и одинаковые имена молча затирают вердикт в журнале.
+    log_event({"event": "gate", "gate": name, "green": green,
+               **_parse_pytest_counts(summary)})
+    (run_dir / f"gate_{name}.txt").write_text(summary)
+    verdict = "ЗЕЛЁНЫЙ" if green else "КРАСНЫЙ"
+    print(f"\nГЕЙТ {name}: {verdict}")
+    return green, summary
+
+
 def on_task_complete(output: TaskOutput):
     """Callback — сохранить вывод и СРАЗУ материализовать файлы на диск.
 
@@ -112,6 +156,10 @@ def on_task_complete(output: TaskOutput):
     stage_name, protect = STAGE_BY_TASK.get(
         task_name, (f"stage_xx_{task_name}", False)
     )
+    # Fix вызывается в цикле: без номера попытки журнал второй попытки
+    # затирал бы первую, и сравнить версии было бы нечем.
+    if task_name == "fix" and _FIX_ATTEMPT:
+        stage_name = f"{stage_name}_{_FIX_ATTEMPT}"
 
     # 1. Сырой вывод роли — всегда
     task_file = _RUN_DIR / f"task_{idx:02d}_{agent_role.replace(' ', '_')}.md"
@@ -624,62 +672,72 @@ def main():
         "budget_usd": MAX_BUDGET_USD,
     })
 
-    tasks = make_tasks(task, run_dir=str(run_dir.resolve()))
-
-    crew = Crew(
-        agents=[architect, test_designer, developer, qa_gate, devops],
-        tasks=tasks,
-        process=Process.sequential,
-        task_callback=on_task_complete,
-        verbose=True,
-    )
-
+    global _FIX_ATTEMPT
     start_time = time.time()
-    try:
-        result = crew.kickoff()
+    tokens_in = tokens_out = 0
+
+    def _accrue(u: dict) -> None:
+        """Суммировать токены всех фаз: usage приходит отдельно на каждый kickoff."""
+        nonlocal tokens_in, tokens_out
+        tokens_in += u["tokens_in"]
+        tokens_out += u["tokens_out"]
+
+    # ── Фаза A: архитектура → тесты → код → неблокирующее ревю ──
+    result_str, u = _phase("A", [architect, test_designer, developer, qa_gate],
+                           make_phase_a_tasks(task))
+    _accrue(u)
+
+    # ── Гейт G1: единственный источник вердикта ────────────────
+    tests_green, tests_summary = _gate("G1", run_dir)
+    dispute = ""
+
+    # ── Фаза B: цикл правок по реальному выводу pytest ─────────
+    # Раньше fix выполнялся всегда и видел только статичные эвристики от
+    # чужой задачи. Теперь он запускается только на красном гейте и получает
+    # дословный вывод pytest плюс файлы из traceback.
+    fix_attempts_used = 0
+    for attempt in range(1, MAX_FIX_ATTEMPTS + 1):
+        if tests_green:
+            break
+        _FIX_ATTEMPT = attempt
+        fix_attempts_used = attempt
+        context = _collect_traceback_context(tests_summary, run_dir, fallback=result_str)
+        _, u = _phase(f"B{attempt}", [developer],
+                      [make_fix_task(tests_summary, context, attempt)])
+        _accrue(u)
+        tests_green, tests_summary = _gate(f"G2_{attempt}", run_dir)
+        if not tests_green:
+            # Спор с тестом разбирает арбитр контракта (P2.2), пока — фиксация факта.
+            stage_dir = run_dir / f"stage_04_fix_{attempt}"
+            for f in sorted(stage_dir.rglob("*")) if stage_dir.exists() else []:
+                if f.is_file() and "DISPUTE:" in f.read_text(errors="ignore"):
+                    dispute = str(f.relative_to(run_dir))
+                    log_event({"event": "dispute_declared", "attempt": attempt,
+                               "file": dispute})
+                    print(f"\nРазработчик заявил спор с тестом: {dispute}")
+                    break
+    _FIX_ATTEMPT = 0
+
+    # ── Фаза C: упаковка — только на зелёных тестах ────────────
+    if tests_green:
+        _, u = _phase("C", [devops], make_phase_c_tasks())
+        _accrue(u)
         status = "✅ Успешно"
-    except Exception as e:
-        result = str(e)
-        status = f"❌ {type(e).__name__}: {e}"
+    else:
+        log_event({"event": "phase_skipped", "phase": "C", "reason": "gate_red"})
+        print("\nФаза C пропущена: тесты красные после всех попыток правок")
+        print("PR НЕ СОЗДАЁТСЯ")
+        status = "❌ Tests failed"
 
     duration = time.time() - start_time
-    result_str = str(result) if result else ""
-
-    # ── Реальные метрики от CrewAI (UsageMetrics от провайдеров) ──
-    usage = getattr(result, "token_usage", None)
-    if usage is not None:
-        tokens_in = usage.prompt_tokens or 0
-        tokens_out = usage.completion_tokens or 0
-    else:
-        tokens_in = tokens_out = 0
     cost = _estimate_cost(tokens_in, tokens_out)
 
-    # ── Сохраняем артефакты ДО деплоя ──────────────────────────
+    # ── Артефакты ──────────────────────────────────────────────
     # Колбэк записал всё по ходу прогона. Повторное извлечение из result
     # убрано: result — вывод последней задачи, который колбэк уже
     # обработал с правильной ролью, а здесь роль была пустая — whitelist не работал.
     saved_files = save_all_artifacts(run_dir)
-
-    # ── ГЕЙТ: программный запуск тестов перед PR ───────────────
-    # Ревью показало: QA-агент 17 прогонов не вызвал run_tests ни разу.
-    # Гейт должен быть кодом, не агентом.
-    from tools import run_tests_quiet
-    tests_green, tests_summary = run_tests_quiet(str(run_dir))
     (run_dir / "tests_output.txt").write_text(tests_summary)
-    # Ключ вердикта — green, не passed: у pytest есть своё passed (число тестов),
-    # и одинаковые имена молча затирают вердикт в журнале.
-    log_event({
-        "event": "gate",
-        "gate": "G1_final",
-        "green": tests_green,
-        **_parse_pytest_counts(tests_summary),
-    })
-    if not tests_green:
-        print(f"\n🔴 ЛОКАЛЬНЫЕ ТЕСТЫ НЕ ПРОШЛИ — PR НЕ СОЗДАЁТСЯ")
-        print(f"   См. {run_dir}/tests_output.txt")
-        status = "❌ Tests failed"
-    else:
-        print(f"\n✅ Локальные тесты пройдены")
 
     # ── Деплой и верификация (DevOps phase 2) ──────────────────
     # Бюджет-гейт: если уже перерасход — пропускаем деплой (экономим ресурсы)
@@ -736,6 +794,8 @@ def main():
         "cost": round(cost, 4),
         "cost_method": "avg_price_all_models",
         "tests_green": tests_green,
+        "fix_attempts": fix_attempts_used,
+        "dispute": dispute or None,
         "artifacts": len(saved_files),
         "pr_url": pr_url,
     })
@@ -827,47 +887,69 @@ def _get_ci_failure_logs(run_id: int, max_chars: int = 6000) -> str:
         return ""
 
 
-def _run_ci_fix(arch_doc: str, ci_logs: str, run_dir: Path) -> int:
-    """Запустить Разработчика для исправления CI-ошибок. Возвращает кол-во новых файлов.
+def _collect_traceback_context(output: str, run_dir: Path, fallback: str = "") -> str:
+    """Собрать контекст для починки: файлы из traceback + весь tests/.
 
-    Вместо arch_doc[:2000] передаём файлы, упомянутые в traceback + весь tests/.
-    Это дешевле полной базы и точнее — убирает шум.
+    Дешевле полной базы и точнее — убирает шум. Работает одинаково
+    для вывода локального pytest и для логов CI: единая реализация вместо двух.
+
+    Распознаёт два формата ссылок на файлы:
+      File "path/to/file.py"   — традиционный traceback Python
+      tests/test_x.py:55:      — короткий формат pytest
     """
-    from crewai import Task, Crew, Process
-    from output_models import CodeOutput
-    from tasks import make_tasks
-
-    # Извлекаем файлы из traceback (строки вида File "path/to/file.py")
-    import re
     traceback_files = set()
-    for match in re.finditer(r'File "([^"]+\.py)"', ci_logs):
-        path = match.group(1)
-        # Нормализуем: убираем абсолютный префикс CI-раннера
-        if "/ai-team-corp/" in path:
-            path = path.split("/ai-team-corp/")[-1]
-        elif "/home/runner/work/" in path:
-            parts = path.split("/")
-            # Берём путь после repo-name
-            if len(parts) > 5:
-                path = "/".join(parts[5:])
-        traceback_files.add(path)
+    for match in re.finditer(r'File "([^"]+\.py)"', output):
+        # Нормализация по диску, а не по шаблону префикса.
+        # Старый split("/ai-team-corp/")[-1] ломался на реальных путях CI
+        # (/home/runner/work/ai-team-corp/ai-team-corp/x.py → ai-team-corp/x.py),
+        # поэтому починка по логам CI молча уходила в фоллбэк.
+        parts = match.group(1).split("/")
+        for i in range(len(parts)):
+            cand = "/".join(parts[i:])
+            if cand and (run_dir / cand).is_file():
+                traceback_files.add(cand)
+                break
 
-    # Читаем содержимое файлов из traceback
+    # Короткий формат pytest: без этого локальный вывод давал пустой контекст
+    for match in re.finditer(r'^([\w./\-]+\.py):\d+', output, re.MULTILINE):
+        traceback_files.add(match.group(1))
+    for match in re.finditer(r'^(?:FAILED|ERROR) ([\w./\-]+\.py)', output, re.MULTILINE):
+        traceback_files.add(match.group(1))
+
     file_contents = []
+    seen = set()
     for tf in sorted(traceback_files):
         tf_path = run_dir / tf
-        if tf_path.exists() and tf_path.is_file():
-            content = tf_path.read_text()
-            file_contents.append(f"### {tf}\n```python\n{content}\n```")
+        if not (tf_path.exists() and tf_path.is_file()):
+            continue
+        try:
+            rel = str(tf_path.resolve().relative_to(run_dir.resolve()))
+        except ValueError:
+            continue
+        if rel in seen:
+            continue
+        seen.add(rel)
+        file_contents.append(f"### {rel}\n```python\n{tf_path.read_text()}\n```")
 
-    # Добавляем весь tests/ (контракт, который не трогаем)
+    # Весь tests/ — контракт, который не трогаем
     tests_dir = run_dir / "tests"
     if tests_dir.exists():
         for tf in sorted(tests_dir.rglob("*.py")):
-            content = tf.read_text()
-            file_contents.append(f"### {tf.relative_to(run_dir)}\n```python\n{content}\n```")
+            rel = str(tf.relative_to(run_dir))
+            if rel in seen:
+                continue
+            seen.add(rel)
+            file_contents.append(f"### {rel}\n```python\n{tf.read_text()}\n```")
 
-    context = "\n\n".join(file_contents) if file_contents else arch_doc[:2000]
+    return "\n\n".join(file_contents) if file_contents else fallback[:2000]
+
+
+def _run_ci_fix(arch_doc: str, ci_logs: str, run_dir: Path) -> int:
+    """Запустить Разработчика для исправления CI-ошибок. Возвращает кол-во новых файлов."""
+    from crewai import Task, Crew, Process
+    from output_models import CodeOutput
+
+    context = _collect_traceback_context(ci_logs, run_dir, fallback=arch_doc)
 
     # Создаём fix-задачу с CI-логами и файлами из traceback
     fix_task = Task(
