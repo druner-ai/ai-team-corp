@@ -130,6 +130,57 @@ def _gate(name: str, run_dir: Path) -> tuple[bool, str]:
     return green, summary
 
 
+def _score(summary: str) -> tuple[int, int]:
+    """Ключ сравнения двух прогонов pytest: МЕНЬШЕ — ЛУЧШЕ.
+
+    Первичен рост пройденных, а не число проблем: при ошибках сбора
+    pytest показывает пять errors вместо десятков незапущенных тестов, и по
+    числу проблем переход 5 errors → 35 passed / 11 failed выглядел бы
+    ухудшением и откатывал полезную правку.
+    """
+    c = _parse_pytest_counts(summary)
+    return -c["passed"], c["failed"] + c["errors"]
+
+
+def _code_snapshot(run_dir: Path) -> dict[str, bytes]:
+    """Снять копию кода и конфигов перед попыткой правки.
+
+    tests/ и stage_*/ не входят: тесты — контракт и роли fix недоступны,
+    stage_* — журнал прогона, его откатывать нельзя.
+    """
+    snap: dict[str, bytes] = {}
+    for p in run_dir.rglob("*"):
+        rel = p.relative_to(run_dir)
+        head = rel.parts[0]
+        if head == "tests" or head.startswith("stage_") or head == "__pycache__":
+            continue
+        if p.is_file() and p.suffix in {".py", ".ini", ".toml", ".cfg", ".txt"}:
+            snap[str(rel)] = p.read_bytes()
+    return snap
+
+
+def _code_restore(run_dir: Path, snap: dict[str, bytes]) -> int:
+    """Вернуть код к снимку: восстановить изменённое, удалить добавленное."""
+    changed = 0
+    for rel, data in snap.items():
+        p = run_dir / rel
+        if not p.is_file() or p.read_bytes() != data:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(data)
+            changed += 1
+    for p in list(run_dir.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(run_dir)
+        head = rel.parts[0]
+        if head == "tests" or head.startswith("stage_") or head == "__pycache__":
+            continue
+        if p.suffix in {".py", ".ini", ".toml", ".cfg", ".txt"} and str(rel) not in snap:
+            p.unlink()
+            changed += 1
+    return changed
+
+
 def on_task_complete(output: TaskOutput):
     """Callback — сохранить вывод и СРАЗУ материализовать файлы на диск.
 
@@ -701,11 +752,29 @@ def main():
             break
         _FIX_ATTEMPT = attempt
         fix_attempts_used = attempt
+        # Снимок до правки: без него попытка может ухудшить состояние
+        # без возврата — в прогоне 20260812_134959 вторая попытка ввела
+        # несуществующую зависимость и увела 35/11 в 18/14/14.
+        before_score = _score(tests_summary)
+        snap = _code_snapshot(run_dir)
         context = _collect_traceback_context(tests_summary, run_dir, fallback=result_str)
         _, u = _phase(f"B{attempt}", [developer],
                       [make_fix_task(tests_summary, context, attempt)])
         _accrue(u)
-        tests_green, tests_summary = _gate(f"G2_{attempt}", run_dir)
+        tests_green, new_summary = _gate(f"G2_{attempt}", run_dir)
+        after_score = _score(new_summary)
+        if not tests_green and after_score > before_score:
+            # Стало хуже: меньше пройденных либо столько же, но больше проблем.
+            n = _code_restore(run_dir, snap)
+            log_event({"event": "fix_rolled_back", "attempt": attempt,
+                       "before": {"passed": -before_score[0], "problems": before_score[1]},
+                       "after": {"passed": -after_score[0], "problems": after_score[1]},
+                       "files_restored": n})
+            print(f"\nПОПЫТКА {attempt} ОТКАЧЕНА: было {-before_score[0]} пройдено "
+                  f"при {before_score[1]} проблемах, стало {-after_score[0]} при "
+                  f"{after_score[1]}; восстановлено файлов: {n}")
+            break
+        tests_summary = new_summary
         if not tests_green:
             # Спор с тестом разбирает арбитр контракта (P2.2), пока — фиксация факта.
             stage_dir = run_dir / f"stage_04_fix_{attempt}"
