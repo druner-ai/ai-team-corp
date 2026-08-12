@@ -63,6 +63,12 @@ FALLBACK_MODEL = MODELS["fallback"]["name"]
 # Фаза A: архитектура (architect), тесты и код (developer), ревю (qa).
 PHASE_MODEL_WEIGHTS = {
     "A": {"architect": 1 / 4, "developer": 2 / 4, "qa": 1 / 4},
+    # Фаза A разбита на A1 (только спека) и A2 (тесты, код, ревю), поэтому
+    # у них разный состав моделей. Test Designer идёт на модели developer:
+    # отдельного ключа test_designer в MODELS нет.
+    "A1": {"architect": 1.0},
+    "A1F": {"architect": 1.0},
+    "A2": {"developer": 2 / 3, "qa": 1 / 3},
     "B": {"developer": 1.0},
     "C": {"devops": 1.0},
     "D": {"architect": 1.0},   # арбитр работает на модели архитектора

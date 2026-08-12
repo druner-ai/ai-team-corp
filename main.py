@@ -34,8 +34,8 @@ from config import (MODELS, FALLBACK_MODEL, PHASE_MODEL_WEIGHTS, SOFT_BUDGET_USD
                     OUTPUT_DIR, VERSION)
 from agents import (architect, test_designer, developer, qa_gate, devops,
                     contract_arbiter, switch_to_fallback)
-from tasks import (make_phase_a_tasks, make_fix_task, make_phase_c_tasks,
-                   make_arbiter_task)
+from tasks import (make_spec_task, make_spec_fix_task, make_impl_tasks,
+                   make_fix_task, make_phase_c_tasks, make_arbiter_task)
 from observability import init_log, log_event
 
 # ─── global state ─────────────────────────────────────────────
@@ -50,6 +50,7 @@ _CHEAP_MODE: bool = False    # режим дешёвых моделей посл
 # protect_tests=True означает: роль не имеет права писать в tests/**.
 STAGE_BY_TASK: dict[str, tuple[str, bool]] = {
     "architecture": ("stage_00_arch", False),
+    "spec_fix":     ("stage_00_arch_fix", False),
     "test_design":  ("stage_01_tests", False),
     "coding":       ("stage_02_dev", False),
     "review":       ("stage_03_qa", False),
@@ -117,8 +118,10 @@ def _phase_cost(phase: str, tokens_in: int, tokens_out: int,
     if cheap:
         weights, method = {"fallback": 1.0}, "per_phase_fallback"
     else:
-        key = phase[0].upper()          # B1, B2, G2_1 → B
-        weights = PHASE_MODEL_WEIGHTS.get(key)
+        # Точное имя фазы важнее первой буквы: у A1 и A2 разный состав
+        # моделей, а срез phase[0] схлопнул бы обе в "A" с неверными весами.
+        weights = (PHASE_MODEL_WEIGHTS.get(phase.upper())
+                   or PHASE_MODEL_WEIGHTS.get(phase[0].upper()))  # B1, G2_1 → B
         if not weights:
             weights, method = {"developer": 1.0}, "per_phase_default"
         else:
@@ -352,6 +355,124 @@ def gate_g3(run_dir: Path) -> tuple[bool, list[str]]:
     for p in problems:
         print(f"  — {p}")
     return not problems, problems
+
+
+ASSERT_RE = re.compile(r"ASSERT-(\d{1,3})")
+# Объявление утверждения — только строка, начинающаяся с ASSERT-NN и
+# двоеточия. Упоминание номера в середине абзаца утверждения не создаёт,
+# иначе любая ссылка в тексте раздувала бы знаменатель покрытия.
+# Маркеры списка, отступы и markdown-жирный шрифт допускаются.
+ASSERT_DECL_RE = re.compile(
+    r"\s*(?:[-*+]\s*|\d+[.)]\s*)?\**\s*ASSERT-(\d{1,3})\s*\**\s*:")
+
+
+def _assert_decls(spec: str) -> list[str]:
+    """Все номера объявлений по порядку, включая повторы."""
+    return [m.group(1).zfill(2) for line in (spec or "").splitlines()
+            if (m := ASSERT_DECL_RE.match(line))]
+
+
+def spec_asserts(spec: str) -> list[str]:
+    """Уникальные номера утверждений спеки с сохранением порядка."""
+    found: list[str] = []
+    for num in _assert_decls(spec):
+        if num not in found:
+            found.append(num)
+    return found
+
+
+def gate_g0_spec(spec: str) -> tuple[bool, list[str], list[str]]:
+    """Гейт G0: спека содержит проверяемые утверждения.
+
+    Смысл гейта — убрать класс споров «спека молчала» до того, как по спеке
+    напишут тесты и код. Гейт проверяет форму (есть ли нумерованные
+    утверждения и корректны ли номера), а не содержательную полноту —
+    последнюю кодом не проверить, и честнее не делать вид.
+    """
+    MIN_ASSERTS = 8
+    problems: list[str] = []
+    nums = spec_asserts(spec)
+    if len(nums) < MIN_ASSERTS:
+        problems.append(f"утверждений ASSERT-NN: {len(nums)}, нужно не менее {MIN_ASSERTS}")
+    # Повторы номеров делают ссылку из теста неоднозначной, а спор —
+    # неразрешимым: арбитр не поймёт, на какое из требований смотреть.
+    declared = _assert_decls(spec)
+    dups = sorted({n for n in declared if declared.count(n) > 1})
+    if dups:
+        problems.append(f"повторяются номера: {', '.join(dups)}")
+    if nums and sorted(nums) != [str(i).zfill(2) for i in range(1, len(nums) + 1)]:
+        problems.append(f"номера не подряд с 01: {', '.join(sorted(nums))}")
+    log_event({"event": "gate", "gate": "G0", "green": not problems,
+               "asserts": len(nums), "problems": problems})
+    print(f"\nГЕЙТ G0 (спека): {'ЗЕЛЁНЫЙ' if not problems else 'КРАСНЫЙ'}, "
+          f"утверждений {len(nums)}")
+    for p in problems:
+        print(f"  — {p}")
+    return not problems, problems, nums
+
+
+def _test_docstrings(run_dir: Path) -> dict[str, str]:
+    """{"файл::имя_теста": docstring} для всего run_dir/tests.
+
+    Разбор через ast: regex по тексту нашёл бы ссылку ASSERT-NN в любом
+    месте тела теста, а не только в его docstring.
+    """
+    import ast
+    out: dict[str, str] = {}
+    tests_dir = run_dir / "tests"
+    if not tests_dir.exists():
+        return out
+    for path in sorted(tests_dir.rglob("test_*.py")):
+        try:
+            tree = ast.parse(path.read_text(errors="ignore"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and node.name.startswith("test_"):
+                rel = path.relative_to(run_dir).as_posix()
+                out[f"{rel}::{node.name}"] = ast.get_docstring(node) or ""
+    return out
+
+
+def gate_g1a_traceability(run_dir: Path, spec: str, label: str = "G1a") -> dict:
+    """Гейт G1a: сопоставить утверждения спеки и ссылки в тестах.
+
+    Не блокирует прогон: единственный вердикт по-прежнему у pytest.
+    Значение гейта двойное: метрика покрытия утверждений и список
+    тестов без опоры в спеке, который получает арбитр: такой тест в споре
+    с кодом проигрывает — правят его, а не код.
+    """
+    declared = spec_asserts(spec)
+    docs = _test_docstrings(run_dir)
+    covered: set[str] = set()
+    unanchored: list[str] = []
+    for name, doc in docs.items():
+        refs = {n.zfill(2) for n in ASSERT_RE.findall(doc or "")}
+        if refs:
+            covered |= refs
+        else:
+            unanchored.append(name)
+    result = {
+        "spec_asserts": len(declared),
+        "tests": len(docs),
+        "covered": len(covered & set(declared)),
+        "uncovered": sorted(set(declared) - covered),
+        "unanchored": sorted(unanchored),
+        "unknown_refs": sorted(covered - set(declared)),
+    }
+    result["ratio"] = (round(result["covered"] / len(declared), 3)
+                       if declared else 0.0)
+    log_event({"event": "gate", "gate": label, "green": None, **result})
+    print(f"\nГЕЙТ {label} (связь со спекой): покрыто "
+          f"{result['covered']}/{result['spec_asserts']} утверждений, "
+          f"тестов без ссылки {len(result['unanchored'])} из {result['tests']}")
+    if result["uncovered"]:
+        print(f"  — не покрыты: {', '.join(result['uncovered'])}")
+    if result["unknown_refs"]:
+        print(f"  — ссылки на несуществующие утверждения: "
+              f"{', '.join(result['unknown_refs'])}")
+    return result
 
 
 def on_task_complete(output: TaskOutput):
@@ -686,6 +807,9 @@ def save_report(run_dir: Path, metrics: dict, deploy_report: str = "") -> Path:
 | Токенов (выход) | {metrics['tokens_out']:,} |
 | Цена | ${metrics['cost']:.4f} |
 | Модели | {metrics['models']} |
+| Утверждений в спеке | {metrics.get('spec_asserts', 0)} |
+| Покрыто тестами | {metrics.get('asserts_covered', 0)} ({metrics.get('asserts_ratio', 0):.0%}) |
+| Тестов без ссылки на спеку | {metrics.get('tests_unanchored', 0)} |
 | Статус | {metrics['status']} |
 
 ## Результаты по задачам
@@ -966,12 +1090,41 @@ def main():
         return False
 
     # ── Фаза A: архитектура → тесты → код → неблокирующее ревю ──
-    result_str, u = _phase("A", [architect, test_designer, developer, qa_gate],
-                           make_phase_a_tasks(task))
+    # Архитектура вынесена в свой kickoff ради гейта G0: пока все четыре
+    # задачи шли одним Crew, проверить спеку до написания тестов было негде —
+    # код между задачами одного Crew не выполняется.
+    spec, u = _phase("A1", [architect], [make_spec_task(task)])
+    _accrue(u)
+
+    # ── Гейт G0: спека говорит проверяемыми утверждениями ──
+    spec_ok, spec_problems, _ = gate_g0_spec(spec)
+    spec_fixed = False
+    if not spec_ok and not _budget_stop("A1f"):
+        # Одна попытка довести спеку до проверяемого вида. Больше одного цикла
+        # не делаем: гейт проверяет форму, а форма либо лечится с первого раза,
+        # либо не лечится вовсе, а прогон должен идти дальше.
+        spec2, u = _phase("A1f", [architect],
+                          [make_spec_fix_task(spec, spec_problems)])
+        _accrue(u)
+        if spec2.strip():
+            ok2, problems2, _ = gate_g0_spec(spec2)
+            # Берём исправленную версию только если она не хуже исходной:
+            # модель способна вернуть один раздел вместо всего документа.
+            if len(spec_asserts(spec2)) >= len(spec_asserts(spec)):
+                spec, spec_ok, spec_problems, spec_fixed = spec2, ok2, problems2, True
+        log_event({"event": "gate", "gate": "G0_retry", "green": spec_ok,
+                   "accepted": spec_fixed, "problems": spec_problems})
+
+    # ── Фаза A2: тесты → код → неблокирующее ревю ──
+    result_str, u = _phase("A2", [test_designer, developer, qa_gate],
+                           make_impl_tasks(spec))
     _accrue(u)
 
     # ── Гейт G1: единственный источник вердикта ────────────────
     tests_green, tests_summary = _gate("G1", run_dir)
+    # Гейт G1a: связь тестов со спекой. Метрика, а не блокировка — вердикт
+    # по-прежнему только у pytest.
+    trace = gate_g1a_traceability(run_dir, spec)
     dispute = ""
 
     # ── Фаза B: цикл правок по реальному выводу pytest ─────────
@@ -1033,22 +1186,30 @@ def main():
         if _budget_stop("D"):
             budget_stopped = "D"
         else:
-            spec = ""
+            # Источник истины для арбитра — спека фазы A1: именно в ней
+            # объявлены ASSERT-NN, на которые ссылаются тесты. Файл на диске
+            # берём только если он не беднее утверждениями (арбитр прошлого
+            # прогона мог дописать SPEC.md).
+            arb_spec = spec
             for cand in ("SPEC.md", "ARCHITECTURE.md", "docs/ARCHITECTURE.md",
-                         "docs/SPEC.md", "README.md"):
-                p = run_dir / cand
-                if p.is_file():
-                    spec = p.read_text(errors="ignore")
+                         "docs/SPEC.md"):
+                sp = run_dir / cand
+                if sp.is_file():
+                    text = sp.read_text(errors="ignore")
+                    if len(spec_asserts(text)) >= len(spec_asserts(spec)):
+                        arb_spec = text
                     break
-            if not spec:
-                spec = result_str        # вывод фазы A, если документ не записан
+            if not arb_spec.strip():
+                arb_spec = result_str     # вывод фазы A2, если спека пуста
             tests_before = _tests_snapshot(run_dir)
             code_snap = _code_snapshot(run_dir)
             before_score = _score(tests_summary)
             context = _collect_traceback_context(tests_summary, run_dir,
                                                  fallback=result_str)
             arb_out, u = _phase("D", [contract_arbiter],
-                                [make_arbiter_task(tests_summary, context, spec, dispute)])
+                                [make_arbiter_task(tests_summary, context, arb_spec,
+                                                   dispute,
+                                                   trace["unanchored"])])
             _accrue(u)
             m = re.search(r"ARBITER:.{0,300}", arb_out)
             arbiter_decision = m.group(0).replace("\\n", " ").strip() if m else ""
@@ -1130,8 +1291,16 @@ def main():
     if status == "✅ Успешно":
         deploy_report = deploy_and_verify(run_dir)
 
+    # Пересчёт покрытия по финальному состоянию tests/: арбитр и цикл правок
+    # могли добавить или переписать тесты после первого замера.
+    trace_final = gate_g1a_traceability(run_dir, spec, label="G1a_final")
+
     metrics = {
         "duration": duration,
+        "spec_asserts": trace_final["spec_asserts"],
+        "asserts_covered": trace_final["covered"],
+        "asserts_ratio": trace_final["ratio"],
+        "tests_unanchored": len(trace_final["unanchored"]),
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
         "cost": cost,
@@ -1179,6 +1348,12 @@ def main():
         "cheap_mode": _CHEAP_MODE,
         "budget_stopped_at": budget_stopped or None,
         "tests_green": tests_green,
+        "spec_asserts": trace_final["spec_asserts"],
+        "asserts_covered": trace_final["covered"],
+        "asserts_ratio": trace_final["ratio"],
+        "tests_unanchored": len(trace_final["unanchored"]),
+        "spec_gate_green": spec_ok,
+        "spec_fixed": spec_fixed,
         "fix_attempts": fix_attempts_used,
         "dispute": dispute or None,
         "arbiter_called": arbiter_accepted is not None,
