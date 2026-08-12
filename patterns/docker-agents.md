@@ -75,6 +75,7 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 |:---|:---|:---|
 | `FROM nginx` + `USER nginx` | `FROM nginxinc/nginx-unprivileged` | Официальный образ падает: нет прав на `/var/cache/nginx` |
 | `EXPOSE 80` под non-root | `EXPOSE 8080` | Порты < 1024 требуют root |
+| `COPY tests/` в образ | копировать только артефакты продукта | Тесты в рантайме — лишний вес и поверхность атаки |
 | `FROM python:3.12` | `FROM python:3.12-slim` | Slim на 500MB меньше |
 | `pip install` без wheels | Multi-stage с `--wheel-dir` | Кэширование слоёв |
 | `USER root` | `USER app` (non-root) | Безопасность |

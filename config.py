@@ -23,11 +23,15 @@ MODELS = {
         "price_per_1m": (0.44, 0.87),
     },
     "qa": {
-        "name": "mistralai/codestral-2508",
+        # codestral-2508 дважды не вызвал run_tests и сочинил отчёт о
+        # несуществующих проблемах (прогон 20260812_095229: заявил об
+        # отсутствии tests/, pytest.ini и requirements-dev.txt, которые
+        # лежали на месте). Роль требует надёжного вызова инструментов.
+        "name": "deepseek/deepseek-v4-pro",
         "temperature": 0.2,
-        "timeout": 90,
+        "timeout": 120,
         "max_retry": 2,
-        "price_per_1m": (0.30, 0.90),
+        "price_per_1m": (0.44, 0.87),
     },
     "devops": {
         "name": "deepseek/deepseek-v4-pro",
