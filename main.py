@@ -666,10 +666,12 @@ def main():
     from tools import run_tests_quiet
     tests_green, tests_summary = run_tests_quiet(str(run_dir))
     (run_dir / "tests_output.txt").write_text(tests_summary)
+    # Ключ вердикта — green, не passed: у pytest есть своё passed (число тестов),
+    # и одинаковые имена молча затирают вердикт в журнале.
     log_event({
         "event": "gate",
         "gate": "G1_final",
-        "passed": tests_green,
+        "green": tests_green,
         **_parse_pytest_counts(tests_summary),
     })
     if not tests_green:

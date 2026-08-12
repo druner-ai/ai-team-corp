@@ -182,8 +182,10 @@ def run_tests(code_directory: str = "") -> str:
 
         # Запускаем pytest
         output_lines.append("\nRunning pytest...")
+        # -vv обязателен: при -v pytest режет diff сообщением "106 lines hidden",
+        # и агент, чинящий код, не видит расхождения и начинает угадывать.
         result = subprocess.run(
-            [str(pytest), str(tests_dir), "-v", "--tb=short"],
+            [str(pytest), str(tests_dir), "-vv", "--tb=long"],
             capture_output=True,
             text=True,
             timeout=300,
@@ -253,7 +255,7 @@ def run_tests_quiet(code_directory: str) -> tuple[bool, str]:
         runtime_notes = prepare_external_runtimes(code_dir, venv_path / "bin")
 
         result = subprocess.run(
-            [str(pytest), str(tests_dir), "-v", "--tb=short"],
+            [str(pytest), str(tests_dir), "-vv", "--tb=long"],
             capture_output=True, text=True, timeout=300, cwd=str(code_dir),
             env=runtime_env()
         )
