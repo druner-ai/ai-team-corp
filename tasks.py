@@ -4,7 +4,8 @@ v3.0 — TDD: Test Designer пишет тесты ДО кода, Разрабо�
 """
 
 from crewai import Task
-from agents import architect, test_designer, developer, qa_gate, devops
+from agents import (architect, test_designer, developer, qa_gate, devops,
+                    contract_arbiter)
 from output_models import CodeOutput
 from patterns import load_patterns
 
@@ -304,6 +305,61 @@ def make_fix_task(pytest_output: str, context: str, attempt: int) -> Task:
         agent=developer,
         output_pydantic=CodeOutput,
         name="fix",
+    )
+
+
+def make_arbiter_task(pytest_output: str, context: str, spec: str,
+                      dispute: str = "") -> Task:
+    """Фаза D: разбор спора между тестом и кодом.
+
+    Вызывается, когда цикл правок исчерпан или разработчик вернул
+    DISPUTE. До этого такой спор был тупиком: тесты закрыты на запись на
+    этапе fix, а спека могла вообще не определять спорное поведение.
+    """
+    dispute_block = (f"\n        === ЗАЯВЛЕННЫЙ СПОР ===\n        {dispute}\n"
+                     if dispute else "")
+    return Task(
+        description=f"""
+        Цикл правок исчерпан, тесты всё ещё красные. Ты решаешь, кто прав.
+{dispute_block}
+        === СПЕКА (архитектурный документ) ===
+        {spec[:8000]}
+
+        === ВЫВОД PYTEST ===
+        ```
+        {pytest_output[-6000:]}
+        ```
+
+        === ФАЙЛЫ ИЗ TRACEBACK И ВЕСЬ tests/ ===
+        {context}
+
+        ПОРЯДОК РАЗБОРА — выполняй именно в этом порядке:
+        1. Найди в спеке утверждение о спорном поведении и процитируй его.
+        2. Если спека требует то, что проверяет тест — ПРАВ ТЕСТ. Правь КОД.
+        3. Если спека о спорном поведении МОЛЧИТ — решение твоё: допиши
+           в SPEC.md раздел с явно зафиксированным требованием и приведи
+           ОДНУ сторону к нему — либо код, либо тест.
+        4. Если тест проверяет деталь реализации (внутреннее имя, порядок
+           вызовов, точный текст сообщения), а не наблюдаемое поведение —
+           перепиши тест на проверку поведения, СОХРАНИВ его смысл.
+
+        ЗАПРЕЩЕНО (проверяется кодом, правка будет откачена целиком):
+        - удалять тестовые функции или целые тестовые файлы;
+        - сокращать число assert более чем на 10%;
+        - ставить @pytest.mark.skip или xfail;
+        - ослаблять проверку до тавтологии вроде assert True или assert x == x.
+
+        ФОРМАТ ОТВЕТА:
+        Верни JSON с полем files — массив объектов {{"path": "...", "content": "..."}}.
+        Только изменённые файлы. В первом файле первой строкой-комментарием
+        запиши решение строго в формате:
+        ARBITER: <прав тест | прав код | спека молчала> — <цитата из спеки или
+        формулировка нового требования> — <что именно исправлено>
+        """,
+        expected_output="JSON с полем files: правка одной стороны спора и решение ARBITER:.",
+        agent=contract_arbiter,
+        output_pydantic=CodeOutput,
+        name="arbitrate",
     )
 
 

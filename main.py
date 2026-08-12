@@ -32,8 +32,10 @@ from crewai.tasks.task_output import TaskOutput
 from config import (MODELS, FALLBACK_MODEL, PHASE_MODEL_WEIGHTS, SOFT_BUDGET_USD,
                     HARD_BUDGET_USD, MAX_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS,
                     OUTPUT_DIR, VERSION)
-from agents import architect, test_designer, developer, qa_gate, devops, switch_to_fallback
-from tasks import make_phase_a_tasks, make_fix_task, make_phase_c_tasks
+from agents import (architect, test_designer, developer, qa_gate, devops,
+                    contract_arbiter, switch_to_fallback)
+from tasks import (make_phase_a_tasks, make_fix_task, make_phase_c_tasks,
+                   make_arbiter_task)
 from observability import init_log, log_event
 
 # ─── global state ─────────────────────────────────────────────
@@ -53,6 +55,10 @@ STAGE_BY_TASK: dict[str, tuple[str, bool]] = {
     "review":       ("stage_03_qa", False),
     "fix":          ("stage_04_fix", True),
     "devops":       ("stage_05_devops", False),
+    # Арбитр — единственная роль с правом менять tests/**, поэтому
+    # protect_tests=False. Ограничение здесь не запрет, а проверка
+    # неослабления после записи: tests_not_weakened.
+    "arbitrate":    ("stage_06_arbiter", False),
 }
 
 
@@ -214,7 +220,7 @@ def _code_snapshot(run_dir: Path) -> dict[str, bytes]:
         head = rel.parts[0]
         if head == "tests" or head.startswith("stage_") or head == "__pycache__":
             continue
-        if p.is_file() and p.suffix in {".py", ".ini", ".toml", ".cfg", ".txt"}:
+        if p.is_file() and p.suffix in {".py", ".ini", ".toml", ".cfg", ".txt", ".md"}:
             snap[str(rel)] = p.read_bytes()
     return snap
 
@@ -235,10 +241,117 @@ def _code_restore(run_dir: Path, snap: dict[str, bytes]) -> int:
         head = rel.parts[0]
         if head == "tests" or head.startswith("stage_") or head == "__pycache__":
             continue
-        if p.suffix in {".py", ".ini", ".toml", ".cfg", ".txt"} and str(rel) not in snap:
+        if p.suffix in {".py", ".ini", ".toml", ".cfg", ".txt", ".md"} and str(rel) not in snap:
             p.unlink()
             changed += 1
     return changed
+
+
+def _tests_snapshot(run_dir: Path) -> dict[str, bytes]:
+    """Снять копию тестов перед вызовом арбитра.
+
+    Считаем только рабочее дерево run_dir/tests: обход всего run_dir
+    захватил бы копии тестов в stage_*/ и удвоил счётчики.
+    """
+    tests_dir = run_dir / "tests"
+    snap: dict[str, bytes] = {}
+    if not tests_dir.exists():
+        return snap
+    for p in tests_dir.rglob("*.py"):
+        if "__pycache__" in p.parts:
+            continue
+        snap[str(p.relative_to(run_dir))] = p.read_bytes()
+    return snap
+
+
+def _test_counts(snap: dict[str, bytes]) -> tuple[int, int]:
+    """Сколько в снимке тестовых функций и проверок."""
+    funcs = asserts = 0
+    for rel, data in snap.items():
+        if not Path(rel).name.startswith("test_"):
+            continue
+        t = data.decode("utf-8", errors="ignore")
+        funcs += len(re.findall(r"^\s*(?:async\s+)?def test_", t, re.M))
+        asserts += len(re.findall(r"^\s*assert\b", t, re.M)) + t.count("pytest.raises")
+    return funcs, asserts
+
+
+def tests_not_weakened(before: dict[str, bytes],
+                       after: dict[str, bytes]) -> tuple[bool, str]:
+    """Проверка кодом, а не моделью: арбитр не ослабил контракт.
+
+    Арбитру нужно право менять тест, иначе спор неразрешим. Но право
+    менять тест — это и возможность сделать гейт зелёным, убрав проверки.
+    Поэтому граница задана счётом, а не доверием к формулировке решения.
+    """
+    f0, a0 = _test_counts(before)
+    f1, a1 = _test_counts(after)
+    if f1 < f0:
+        return False, f"число тестов уменьшилось: {f0} → {f1}"
+    if a1 < a0 * 0.9:
+        return False, f"число проверок упало более чем на 10%: {a0} → {a1}"
+    for rel, data in after.items():
+        t = data.decode("utf-8", errors="ignore")
+        if "mark.skip" in t or "mark.xfail" in t:
+            return False, f"появился skip/xfail-маркер в {rel}"
+    return True, f"ок: тестов {f0} → {f1}, проверок {a0} → {a1}"
+
+
+def _tests_restore(run_dir: Path, snap: dict[str, bytes]) -> int:
+    """Вернуть тесты к снимку: откат отклонённой правки арбитра."""
+    changed = 0
+    for rel, data in snap.items():
+        p = run_dir / rel
+        if not p.is_file() or p.read_bytes() != data:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(data)
+            changed += 1
+    tests_dir = run_dir / "tests"
+    if tests_dir.exists():
+        for p in list(tests_dir.rglob("*.py")):
+            if "__pycache__" in p.parts:
+                continue
+            if str(p.relative_to(run_dir)) not in snap:
+                p.unlink()
+                changed += 1
+    return changed
+
+
+def gate_g3(run_dir: Path) -> tuple[bool, list[str]]:
+    """Гейт G3: упаковка не сломала тесты и CI не прячет падения.
+
+    Раньше ci.yml уезжал в GitHub никем не проверенным: синтаксически битый
+    workflow или шаг тестов с `|| true` обнаруживались только на стороне
+    GitHub, а `|| true` не обнаруживался вовсе — CI становится зелёным всегда.
+    """
+    problems: list[str] = []
+    ok, summary = _gate("G3_tests", run_dir)
+    if not ok:
+        problems.append("упаковка сломала зелёные тесты")
+    wf = run_dir / ".github" / "workflows" / "ci.yml"
+    if not wf.exists():
+        problems.append("нет .github/workflows/ci.yml")
+    else:
+        text = wf.read_text(errors="ignore")
+        try:
+            import yaml
+            yaml.safe_load(text)
+        except Exception as e:
+            problems.append(f"ci.yml не разбирается: {type(e).__name__}")
+        if "|| true" in text:
+            problems.append("ci.yml прячет падение тестов через || true")
+        if "continue-on-error: true" in text:
+            problems.append("ci.yml прячет падение через continue-on-error")
+        reqs = run_dir / "requirements-dev.txt"
+        if (reqs.exists() and "pytest-playwright" in reqs.read_text(errors="ignore")
+                and "playwright install" not in text):
+            problems.append("pytest-playwright без шага playwright install")
+    log_event({"event": "gate", "gate": "G3", "green": not problems,
+               "problems": problems})
+    print(f"\nГЕЙТ G3: {'ЗЕЛЁНЫЙ' if not problems else 'КРАСНЫЙ'}")
+    for p in problems:
+        print(f"  — {p}")
+    return not problems, problems
 
 
 def on_task_complete(output: TaskOutput):
@@ -843,7 +956,8 @@ def main():
             return True
         if spent > SOFT_BUDGET_USD and not _CHEAP_MODE:
             _CHEAP_MODE = True
-            roles = switch_to_fallback([architect, test_designer, developer, qa_gate, devops])
+            roles = switch_to_fallback([architect, test_designer, developer,
+                                        qa_gate, devops, contract_arbiter])
             log_event({"event": "budget", "level": "soft", "spent": round(spent, 4),
                        "limit": SOFT_BUDGET_USD, "next_phase": next_phase,
                        "fallback_model": FALLBACK_MODEL, "roles": roles})
@@ -909,11 +1023,80 @@ def main():
                     break
     _FIX_ATTEMPT = 0
 
+    # ── Фаза D: арбитр контракта ────────────────────────────────
+    # Цикл правок исчерпан, а тесты красные. Раньше здесь прогон заканчивался:
+    # тесты закрыты на запись на этапе fix, спека могла спорное поведение не
+    # определять, и права принять решение не было ни у одной роли.
+    arbiter_decision = ""
+    arbiter_accepted: bool | None = None
+    if not tests_green and not budget_stopped:
+        if _budget_stop("D"):
+            budget_stopped = "D"
+        else:
+            spec = ""
+            for cand in ("SPEC.md", "ARCHITECTURE.md", "docs/ARCHITECTURE.md",
+                         "docs/SPEC.md", "README.md"):
+                p = run_dir / cand
+                if p.is_file():
+                    spec = p.read_text(errors="ignore")
+                    break
+            if not spec:
+                spec = result_str        # вывод фазы A, если документ не записан
+            tests_before = _tests_snapshot(run_dir)
+            code_snap = _code_snapshot(run_dir)
+            before_score = _score(tests_summary)
+            context = _collect_traceback_context(tests_summary, run_dir,
+                                                 fallback=result_str)
+            arb_out, u = _phase("D", [contract_arbiter],
+                                [make_arbiter_task(tests_summary, context, spec, dispute)])
+            _accrue(u)
+            m = re.search(r"ARBITER:.{0,300}", arb_out)
+            arbiter_decision = m.group(0).replace("\\n", " ").strip() if m else ""
+            # Право менять тест — это и возможность сделать гейт зелёным, убрав
+            # проверки. Границу ставит счёт, а не формулировка решения.
+            ok_w, why = tests_not_weakened(tests_before, _tests_snapshot(run_dir))
+            if not ok_w:
+                arbiter_accepted = False
+                n_t = _tests_restore(run_dir, tests_before)
+                n_c = _code_restore(run_dir, code_snap)
+                log_event({"event": "arbiter", "accepted": False, "reason": why,
+                           "decision": arbiter_decision,
+                           "tests_restored": n_t, "code_restored": n_c})
+                print(f"\nПРАВКА АРБИТРА ОТКЛОНЕНА: {why}")
+                print(f"  восстановлено: тестов {n_t}, файлов кода {n_c}")
+            else:
+                tests_green, new_summary = _gate("G2_arb", run_dir)
+                after_score = _score(new_summary)
+                if not tests_green and after_score > before_score:
+                    arbiter_accepted = False
+                    n_t = _tests_restore(run_dir, tests_before)
+                    n_c = _code_restore(run_dir, code_snap)
+                    log_event({"event": "arbiter", "accepted": False,
+                               "reason": "регресс после правки арбитра",
+                               "decision": arbiter_decision,
+                               "tests_restored": n_t, "code_restored": n_c})
+                    print(f"\nПРАВКА АРБИТРА ОТКАЧЕНА: стало хуже "
+                          f"({-before_score[0]} → {-after_score[0]} пройдено)")
+                else:
+                    tests_summary = new_summary
+                    arbiter_accepted = True
+                    log_event({"event": "arbiter", "accepted": True, "reason": why,
+                               "decision": arbiter_decision,
+                               "tests_green": tests_green})
+                    print(f"\nРЕШЕНИЕ АРБИТРА: {arbiter_decision or '(без пометки ARBITER:)'}")
+                    print(f"  контракт не ослаблен — {why}")
+
     # ── Фаза C: упаковка — только на зелёных тестах и в бюджете ───
     if tests_green and not budget_stopped and not _budget_stop("C"):
         _, u = _phase("C", [devops], make_phase_c_tasks())
         _accrue(u)
-        status = "✅ Успешно"
+        # Гейт G3: упаковка не сломала тесты и CI не прячет падения.
+        g3_ok, g3_problems = gate_g3(run_dir)
+        if g3_ok:
+            status = "✅ Успешно"
+        else:
+            status = "❌ Гейт G3 не пройден"
+            print("PR НЕ СОЗДАЁТСЯ: " + "; ".join(g3_problems))
     elif tests_green:
         budget_stopped = budget_stopped or "C"
         log_event({"event": "phase_skipped", "phase": "C", "reason": "budget_exceeded"})
@@ -924,7 +1107,7 @@ def main():
         log_event({"event": "phase_skipped", "phase": "C", "reason": reason})
         print("\nФаза C пропущена: " + (
             "бюджет исчерпан до зелёных тестов" if budget_stopped
-            else "тесты красные после всех попыток правок"))
+            else "тесты красные после всех попыток правок и разбора арбитра"))
         print("PR НЕ СОЗДАЁТСЯ")
         status = ("⚠️ Бюджет исчерпан, тесты красные" if budget_stopped
                   else "❌ Tests failed")
@@ -998,6 +1181,9 @@ def main():
         "tests_green": tests_green,
         "fix_attempts": fix_attempts_used,
         "dispute": dispute or None,
+        "arbiter_called": arbiter_accepted is not None,
+        "arbiter_accepted": arbiter_accepted,
+        "arbiter_decision": arbiter_decision or None,
         "artifacts": len(saved_files),
         "pr_url": pr_url,
     })

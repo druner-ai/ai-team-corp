@@ -65,6 +65,7 @@ PHASE_MODEL_WEIGHTS = {
     "A": {"architect": 1 / 4, "developer": 2 / 4, "qa": 1 / 4},
     "B": {"developer": 1.0},
     "C": {"devops": 1.0},
+    "D": {"architect": 1.0},   # арбитр работает на модели архитектора
 }
 
 # Два порога бюджета на прогон.
