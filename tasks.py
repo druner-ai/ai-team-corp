@@ -42,6 +42,7 @@ def make_tasks(task_description: str, run_dir: str = "") -> list[Task]:
                        "содержит все 7 разделов). Документ самодостаточен — "
                        "Разработчик не должен додумывать.",
         agent=architect,
+        name="architecture",
     )
 
     # TDD Этап 1: Test Designer пишет тесты ПО АРХИТЕКТУРЕ, не видя кода

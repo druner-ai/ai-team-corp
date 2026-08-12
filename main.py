@@ -32,10 +32,24 @@ from crewai.tasks.task_output import TaskOutput
 from config import MODELS, FALLBACK_MODEL, MAX_BUDGET_USD, MAX_REVIEW_CYCLES, MAX_CI_FIX_ATTEMPTS, OUTPUT_DIR, VERSION
 from agents import architect, test_designer, developer, qa_gate, devops
 from tasks import make_tasks
+from observability import init_log, log_event
 
 # ─── global state ─────────────────────────────────────────────
 
 _all_outputs: list[tuple[str, str, str, dict]] = []  # (task_name, agent_role, raw_output, json_dict)
+_written_files: dict[str, Path] = {}  # манифест всего, что записано на диск
+_RUN_DIR: Path | None = None  # каталог прогона, выставляется в main() до kickoff
+
+# Соответствие имени задачи (name= в tasks.py) стадии и защите тестов.
+# protect_tests=True означает: роль не имеет права писать в tests/**.
+STAGE_BY_TASK: dict[str, tuple[str, bool]] = {
+    "architecture": ("stage_00_arch", False),
+    "test_design":  ("stage_01_tests", False),
+    "coding":       ("stage_02_dev", False),
+    "review":       ("stage_03_qa", False),
+    "fix":          ("stage_04_fix", True),
+    "devops":       ("stage_05_devops", False),
+}
 
 
 def _estimate_cost(tokens_in: int, tokens_out: int) -> float:
@@ -51,17 +65,84 @@ def _estimate_cost(tokens_in: int, tokens_out: int) -> float:
     return (tokens_in / 1_000_000) * avg_in + (tokens_out / 1_000_000) * avg_out
 
 
+def _parse_pytest_counts(output: str) -> dict:
+    """Вытащить числа из итоговой строки pytest.
+
+    Ищет числа вида "8 failed, 22 passed in 0.41s" в любом порядке.
+    Нули во всех полях — тоже сигнал: итоговой строки нет, тесты не собрались.
+    """
+    counts = {"passed": 0, "failed": 0, "errors": 0, "skipped": 0}
+    for key, pat in (
+        ("passed", r"(\d+) passed"),
+        ("failed", r"(\d+) failed"),
+        ("errors", r"(\d+) error"),
+        ("skipped", r"(\d+) skipped"),
+    ):
+        found = re.findall(pat, output)
+        if found:
+            counts[key] = int(found[-1])
+    return counts
+
+
 # ─── callback: захват вывода каждой задачи ────────────────────
 
 def on_task_complete(output: TaskOutput):
-    """Callback — вызывается после каждой завершённой задачи."""
+    """Callback — сохранить вывод и СРАЗУ материализовать файлы на диск.
+
+    Ключевое свойство: следующая роль и гейты видят файлы предыдущей
+    роли на диске, а не только в тексте контекста. Раньше вся раскладка
+    шла после crew.kickoff(), и QA закономерно получал "No tests/ directory".
+
+    Пишет в два места:
+      1. stage_NN_*/  — неизменяемый журнал того, что выдала роль
+      2. run_dir/     — рабочее дерево, в котором работает pytest
+    """
     task_name = output.name or "unknown"
     agent_role = str(output.agent) if output.agent else "unknown"
     raw_output = str(output.raw) if output.raw else ""
     json_output = output.json_dict or {}
 
-    # Сохраняем вывод
+    idx = len(_all_outputs)
     _all_outputs.append((task_name, agent_role, raw_output, json_output))
+
+    if _RUN_DIR is None:
+        print("⚠️ on_task_complete: _RUN_DIR не выставлен, файлы не записаны")
+        return
+
+    stage_name, protect = STAGE_BY_TASK.get(
+        task_name, (f"stage_xx_{task_name}", False)
+    )
+
+    # 1. Сырой вывод роли — всегда
+    task_file = _RUN_DIR / f"task_{idx:02d}_{agent_role.replace(' ', '_')}.md"
+    task_file.write_text(
+        f"# {agent_role}\n\n## Задача\n{task_name}\n\n## Результат\n\n{raw_output}"
+    )
+    _written_files[task_file.name] = task_file
+
+    # 2. Журнал стадии — неизменяемая копия вывода роли.
+    #    Нужна для сравнения версий и для проверки неослабления тестов.
+    stage_dir = _RUN_DIR / stage_name
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    _extract_files(raw_output, stage_dir, protect_tests=protect,
+                   role=agent_role, json_dict=json_output)
+
+    # 3. Рабочее дерево — то, что видят следующие роли и гейты
+    written = _extract_files(raw_output, _RUN_DIR, protect_tests=protect,
+                            role=agent_role, json_dict=json_output)
+    _written_files.update(written)
+
+    log_event({
+        "event": "artifacts",
+        "task": task_name,
+        "role": agent_role,
+        "stage": stage_name,
+        "protect_tests": protect,
+        "files": sorted(written.keys()),
+        "raw_len": len(raw_output),
+    })
+    if written:
+        print(f"   💾 {task_name}: записано {len(written)} файлов в {_RUN_DIR.name}/")
 
 
 def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool = False, protect_tests: bool = False, role: str = "") -> Path | None:
@@ -257,7 +338,11 @@ def _extract_files(text: str, run_dir: Path, protect_tests: bool = False, role: 
         if len(content) < 20:
             continue
 
-        result = _write_file_safe(run_dir, filepath, content)
+        # ВАЖНО: regex-фоллбэк тоже обязан уважать whitelist роли и
+        # защиту тестов. Раньше он их не передавал — дыра в защите:
+        # стоило модели ответить не JSON, и fix-этап мог переписать tests/**.
+        result = _write_file_safe(run_dir, filepath, content, overwrite=True,
+                                  protect_tests=protect_tests, role=role)
         if result:
             saved[filepath] = result
 
@@ -265,85 +350,17 @@ def _extract_files(text: str, run_dir: Path, protect_tests: bool = False, role: 
 
 
 def save_all_artifacts(run_dir: Path) -> dict[str, Path]:
-    """Извлечь файлы из выводов задач, которые реально производят файлы.
+    """Вернуть манифест файлов, уже записанных колбэком.
 
-    Каждый этап пишет в собственный подкаталог (stage_02_dev/, stage_04_fix/ и т.д.).
-    Финальная сборка — копия последней успешной волны, без объединения с предыдущими.
-    Это устраняет проблему наслоения: два conftest.py, мёртвый груз от старых волн.
+    Раскладки здесь больше нет: всё пишется в on_task_complete сразу
+    после каждой задачи. Копирование стадий в финальное дерево убрано:
+    при инкрементальной записи порядок задаёт сам ход прогона, а права
+    ролей не дают DevOps перебить код, а fix — тесты. Оттуда же раньше
+    брались два conftest.py и файлы .collision.
+
+    stage_NN_*/ остаются как журнал и в рабочее дерево не переносятся.
     """
-    all_files = {}
-    # Роли, которые реально производят файлы (не Архитектор, не QA)
-    FILE_PRODUCING_ROLES = {"test designer", "разработ", "devops"}
-
-    # Маппинг индекса задачи на stage-директорию
-    # 0=архитектор, 1=test_designer, 2=разработчик, 3=QA, 4=fix, 5=devops
-    STAGE_DIRS = {
-        1: "stage_01_tests",
-        2: "stage_02_dev",
-        4: "stage_04_fix",
-        5: "stage_05_devops",
-    }
-
-    # Отслеживаем последнюю успешную волну для финальной сборки
-    last_wave_dir = None
-
-    for i, (task_name, agent_role, raw_output, json_dict) in enumerate(_all_outputs):
-        role_lower = agent_role.lower()
-        if not any(role in role_lower for role in FILE_PRODUCING_ROLES):
-            # Сохраняем сырой вывод, но не извлекаем файлы
-            task_file = run_dir / f"task_{i:02d}_{agent_role.replace(' ', '_')}.md"
-            task_file.write_text(f"# {agent_role}\n\n## Задача\n{task_name}\n\n## Результат\n\n{raw_output}")
-            all_files[f"task_{i:02d}_{agent_role}.md"] = task_file
-            continue
-
-        # Определяем stage-директорию
-        stage_name = STAGE_DIRS.get(i, f"stage_{i:02d}_{agent_role.replace(' ', '_')}")
-        stage_dir = run_dir / stage_name
-        stage_dir.mkdir(parents=True, exist_ok=True)
-
-        # fix_task — защищаем тесты (только index 4, не "fix" в task_name — это срабатывает на "fixtures")
-        is_fix_stage = i == 4
-        extracted = _extract_files(raw_output, stage_dir, protect_tests=is_fix_stage, role=agent_role, json_dict=json_dict)
-        all_files.update(extracted)
-
-        # Запоминаем последнюю волну, которая произвела файлы
-        if extracted:
-            last_wave_dir = stage_dir
-
-        # Также сохраняем сырой вывод каждой задачи
-        task_file = run_dir / f"task_{i:02d}_{agent_role.replace(' ', '_')}.md"
-        task_file.write_text(f"# {agent_role}\n\n## Задача\n{task_name}\n\n## Результат\n\n{raw_output}")
-        all_files[f"task_{i:02d}_{agent_role}.md"] = task_file
-
-    # Финальная сборка: собираем из ключевых этапов, а не только последней волны.
-    # Код (stage_02_dev или stage_04_fix если fix был) + тесты (stage_01_tests) + DevOps (stage_05_devops).
-    # Это устраняет проблему наслоения: два conftest.py, мёртвый груз от старых волн.
-    final_stages = []
-
-    # Определяем, какой этап содержит код (fix перезаписывает dev)
-    code_stage = run_dir / "stage_04_fix" if (run_dir / "stage_04_fix").exists() and any((run_dir / "stage_04_fix").iterdir()) else run_dir / "stage_02_dev"
-    if code_stage.exists():
-        final_stages.append(code_stage)
-
-    tests_stage = run_dir / "stage_01_tests"
-    if tests_stage.exists() and any(tests_stage.iterdir()):
-        final_stages.append(tests_stage)
-
-    devops_stage = run_dir / "stage_05_devops"
-    if devops_stage.exists():
-        final_stages.append(devops_stage)
-
-    for stage in final_stages:
-        for item in stage.rglob("*"):
-            if item.is_file():
-                rel = item.relative_to(stage)
-                dest = run_dir / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                import shutil
-                shutil.copy2(item, dest)
-                all_files[str(rel)] = dest
-
-    return all_files
+    return dict(_written_files)
 
 
 def save_report(run_dir: Path, metrics: dict, deploy_report: str = "") -> Path:
@@ -592,6 +609,21 @@ def main():
     run_dir = Path(OUTPUT_DIR) / timestamp
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    # Колбэк пишет файлы сам — ему нужен каталог до kickoff.
+    # Инструменты (run_tests) берут тот же каталог из окружения, не из промпта.
+    global _RUN_DIR
+    _RUN_DIR = run_dir
+    os.environ["AI_TEAM_RUN_DIR"] = str(run_dir.resolve())
+    init_log(run_dir)
+    log_event({
+        "event": "run_start",
+        "version": VERSION,
+        "run_dir": str(run_dir.resolve()),
+        "task": task[:2000],
+        "models": {k: v["name"] for k, v in MODELS.items()},
+        "budget_usd": MAX_BUDGET_USD,
+    })
+
     tasks = make_tasks(task, run_dir=str(run_dir.resolve()))
 
     crew = Crew(
@@ -623,21 +655,26 @@ def main():
     cost = _estimate_cost(tokens_in, tokens_out)
 
     # ── Сохраняем артефакты ДО деплоя ──────────────────────────
+    # Колбэк записал всё по ходу прогона. Повторное извлечение из result
+    # убрано: result — вывод последней задачи, который колбэк уже
+    # обработал с правильной ролью, а здесь роль была пустая — whitelist не работал.
     saved_files = save_all_artifacts(run_dir)
-    # Финальная сборка: извлекаем из результата Crew (DevOps), передаём json_dict если есть
-    final_json = getattr(result, "json_dict", None) or {}
-    final_extracted = _extract_files(result_str, run_dir, json_dict=final_json)
-    saved_files.update(final_extracted)
 
     # ── ГЕЙТ: программный запуск тестов перед PR ───────────────
     # Ревью показало: QA-агент 17 прогонов не вызвал run_tests ни разу.
     # Гейт должен быть кодом, не агентом.
     from tools import run_tests_quiet
     tests_green, tests_summary = run_tests_quiet(str(run_dir))
+    (run_dir / "tests_output.txt").write_text(tests_summary)
+    log_event({
+        "event": "gate",
+        "gate": "G1_final",
+        "passed": tests_green,
+        **_parse_pytest_counts(tests_summary),
+    })
     if not tests_green:
         print(f"\n🔴 ЛОКАЛЬНЫЕ ТЕСТЫ НЕ ПРОШЛИ — PR НЕ СОЗДАЁТСЯ")
         print(f"   См. {run_dir}/tests_output.txt")
-        (run_dir / "tests_output.txt").write_text(tests_summary)
         status = "❌ Tests failed"
     else:
         print(f"\n✅ Локальные тесты пройдены")
@@ -687,6 +724,19 @@ def main():
     pr_url = None
     if status == "✅ Успешно":
         pr_url = create_pr_from_run(run_dir, task, timestamp, metrics, deploy_report)
+
+    log_event({
+        "event": "run_end",
+        "status": status,
+        "duration": round(duration, 1),
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "cost": round(cost, 4),
+        "cost_method": "avg_price_all_models",
+        "tests_green": tests_green,
+        "artifacts": len(saved_files),
+        "pr_url": pr_url,
+    })
 
     # ── CI fix loop: ждём CI, при падении — доработка ──────────
     if pr_url:
