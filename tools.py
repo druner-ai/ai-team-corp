@@ -8,6 +8,8 @@ from pathlib import Path
 
 from crewai.tools import tool
 
+from observability import log_event
+
 _UV = shutil.which("uv") or "/home/deploy/.local/bin/uv"
 
 
@@ -96,22 +98,42 @@ def prepare_external_runtimes(code_dir: Path, venv_bin: Path) -> list[str]:
 
 
 @tool("run_tests")
-def run_tests(code_directory: str) -> str:
-    """Запустить pytest в указанной директории с кодом.
+def run_tests(code_directory: str = "") -> str:
+    """Запустить pytest в текущем прогоне. Путь не нужен — он берётся автоматически.
 
     Args:
-        code_directory: Путь к директории с кодом и тестами (где лежат tests/ и app/).
+        code_directory: ИГНОРИРУЕТСЯ. Оставлен для совместимости: модель всё равно
+            иногда передаёт путь, и выдуманный путь не должен ломать запуск.
 
     Returns:
         Результат запуска тестов: stdout + stderr. Ищи строки "passed", "failed", "error".
     """
-    code_dir = Path(code_directory).resolve()
+    # Путь — факт окружения, не аргумент из LLM. Ревью показало: модель
+    # подставляла "./output", "/app", "текущая директория" — и получала ERROR.
+    env_dir = os.environ.get("AI_TEAM_RUN_DIR", "")
+    if not env_dir:
+        return ("ERROR: AI_TEAM_RUN_DIR не выставлен. Инструмент вызван вне прогона "
+                "— это дефект оркестратора, не твоя ошибка.")
+
+    code_dir = Path(env_dir).resolve()
+    if code_directory and Path(code_directory).resolve() != code_dir:
+        log_event({
+            "event": "tool_arg_ignored",
+            "tool": "run_tests",
+            "passed": code_directory,
+            "used": str(code_dir),
+        })
+
     if not code_dir.exists():
-        return f"ERROR: Directory {code_directory} does not exist"
+        return f"ERROR: Directory {code_dir} does not exist"
 
     tests_dir = code_dir / "tests"
     if not tests_dir.exists():
-        return f"ERROR: No tests/ directory found in {code_directory}"
+        existing = sorted(p.name for p in code_dir.iterdir())[:20]
+        log_event({"event": "tool_call", "tool": "run_tests", "result": "no_tests_dir",
+                   "dir": str(code_dir), "contents": existing})
+        return (f"ERROR: No tests/ directory found in {code_dir}. "
+                f"Содержимое каталога: {existing}")
 
     req_file = code_dir / "requirements.txt"
     req_dev_file = code_dir / "requirements-dev.txt"
@@ -179,6 +201,9 @@ def run_tests(code_directory: str) -> str:
             output_lines.append("\n✅ ALL TESTS PASSED")
         else:
             output_lines.append(f"\n❌ TESTS FAILED (exit code {result.returncode})")
+
+        log_event({"event": "tool_call", "tool": "run_tests", "dir": str(code_dir),
+                   "exit_code": result.returncode})
 
     return "\n".join(output_lines)
 
