@@ -112,3 +112,17 @@ AGENTS = {
     "qa": qa_gate,
     "devops": devops,
 }
+
+
+def switch_to_fallback(agent_list: list) -> list[str]:
+    """Перевести агентов на дешёвую модель. Возвращает имена ролей.
+
+    FALLBACK_MODEL был объявлен в конфиге и импортирован в main, но ни одна
+    строка его не использовала. Здесь он становится реакцией на мягкий порог
+    бюджета: довести прогон до конца дешёвой моделью лучше, чем бросить.
+    """
+    switched = []
+    for a in agent_list:
+        a.llm = _make_llm("fallback")
+        switched.append(a.role)
+    return switched

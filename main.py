@@ -29,8 +29,10 @@ load_dotenv("/home/deploy/hermes/data/.env")
 from crewai import Crew, Process
 from crewai.tasks.task_output import TaskOutput
 
-from config import MODELS, FALLBACK_MODEL, MAX_BUDGET_USD, MAX_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS, OUTPUT_DIR, VERSION
-from agents import architect, test_designer, developer, qa_gate, devops
+from config import (MODELS, FALLBACK_MODEL, PHASE_MODEL_WEIGHTS, SOFT_BUDGET_USD,
+                    HARD_BUDGET_USD, MAX_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS,
+                    OUTPUT_DIR, VERSION)
+from agents import architect, test_designer, developer, qa_gate, devops, switch_to_fallback
 from tasks import make_phase_a_tasks, make_fix_task, make_phase_c_tasks
 from observability import init_log, log_event
 
@@ -40,6 +42,7 @@ _all_outputs: list[tuple[str, str, str, dict]] = []  # (task_name, agent_role, r
 _written_files: dict[str, Path] = {}  # манифест всего, что записано на диск
 _RUN_DIR: Path | None = None
 _FIX_ATTEMPT: int = 0        # номер текущей попытки починки, 0 — вне цикла правок
+_CHEAP_MODE: bool = False    # режим дешёвых моделей после soft-порога бюджета
 
 # Соответствие имени задачи (name= в tasks.py) стадии и защите тестов.
 # protect_tests=True означает: роль не имеет права писать в tests/**.
@@ -53,17 +56,70 @@ STAGE_BY_TASK: dict[str, tuple[str, bool]] = {
 }
 
 
-def _estimate_cost(tokens_in: int, tokens_out: int) -> float:
-    """Оценка стоимости по усреднённой цене моделей команды.
+def _refresh_prices() -> str:
+    """Сверить цены моделей с прайсом OpenRouter. Возвращает источник цен.
 
-    CrewAI возвращает суммарные токены без разбивки по агентам,
-    поэтому считаем по средневзвешенной цене всех ролей.
+    Цены в конфиге молча разошлись с реальными по всем ролям сразу, и так
+    же молча исказили все 26 прошлых отчётов. Зависеть от вручную вбитой
+    цифры без проверки нельзя: метрика, которая тихо врёт, хуже отсутствующей.
+    При недоступности API остаются запасные цены, и это видно в журнале.
+    """
+    try:
+        import httpx
+        key = os.getenv("OPENROUTER_API_KEY")
+        r = httpx.get("https://openrouter.ai/api/v1/models",
+                      headers={"Authorization": f"Bearer {key}"}, timeout=20)
+        r.raise_for_status()
+        prices = {}
+        for m in r.json().get("data", []):
+            p = m.get("pricing") or {}
+            if m.get("id") and p.get("prompt") is not None:
+                prices[m["id"]] = (float(p["prompt"]) * 1e6,
+                                   float(p.get("completion", 0)) * 1e6)
+        changed = {}
+        for role, cfg in MODELS.items():
+            actual = prices.get(cfg["name"])
+            if actual and tuple(round(x, 4) for x in actual) != tuple(cfg["price_per_1m"]):
+                changed[role] = {"was": list(cfg["price_per_1m"]),
+                                 "now": [round(x, 4) for x in actual]}
+                cfg["price_per_1m"] = (round(actual[0], 4), round(actual[1], 4))
+        if not prices:
+            return "config"
+        log_event({"event": "prices", "source": "openrouter", "changed": changed})
+        if changed:
+            for role, d in changed.items():
+                print(f"  Цена {role}: {d['was']} → {d['now']} $/1M")
+        return "openrouter"
+    except Exception as e:
+        log_event({"event": "prices", "source": "config", "error": f"{type(e).__name__}: {e}"})
+        print(f"  Цены не сверены с OpenRouter ({type(e).__name__}), считаю по конфигу")
+        return "config"
+
+
+def _phase_cost(phase: str, tokens_in: int, tokens_out: int,
+                cheap: bool = False) -> tuple[float, str]:
+    """Стоимость фазы по фактическому составу моделей.
+
+    Раньше было среднее арифметическое цен всех ролей на весь прогон: оно
+    завышало вклад дешёвых ролей и занижало вклад дорогой. После разбиения
+    на фазы состав моделей в фазе известен, и цена смешивается по его весам.
+    Метод возвращается рядом с числом: ценнее честная оценка с пометкой о
+    способе счёта, чем аккуратно выглядящее число неизвестной природы.
     """
     if not tokens_in and not tokens_out:
-        return 0.0
-    avg_in = sum(m["price_per_1m"][0] for m in MODELS.values()) / len(MODELS)
-    avg_out = sum(m["price_per_1m"][1] for m in MODELS.values()) / len(MODELS)
-    return (tokens_in / 1_000_000) * avg_in + (tokens_out / 1_000_000) * avg_out
+        return 0.0, "empty"
+    if cheap:
+        weights, method = {"fallback": 1.0}, "per_phase_fallback"
+    else:
+        key = phase[0].upper()          # B1, B2, G2_1 → B
+        weights = PHASE_MODEL_WEIGHTS.get(key)
+        if not weights:
+            weights, method = {"developer": 1.0}, "per_phase_default"
+        else:
+            method = "per_phase_weights"
+    cin = sum(w * MODELS[k]["price_per_1m"][0] for k, w in weights.items())
+    cout = sum(w * MODELS[k]["price_per_1m"][1] for k, w in weights.items())
+    return tokens_in / 1e6 * cin + tokens_out / 1e6 * cout, method
 
 
 def _parse_pytest_counts(output: str) -> dict:
@@ -111,8 +167,12 @@ def _phase(name: str, agents: list, tasks: list) -> tuple[str, dict]:
         "tokens_in": getattr(usage, "prompt_tokens", 0) or 0,
         "tokens_out": getattr(usage, "completion_tokens", 0) or 0,
     }
+    u["cost"], u["cost_method"] = _phase_cost(name, u["tokens_in"], u["tokens_out"],
+                                              cheap=_CHEAP_MODE)
     log_event({"event": "phase_end", "phase": name,
                "duration": round(time.time() - t0, 1), "error": error, **u})
+    print(f"ФАЗА {name}: ${u['cost']:.4f} "
+          f"({u['tokens_in']}/{u['tokens_out']} токенов, {u['cost_method']})")
     return str(result or error or ""), u
 
 
@@ -727,7 +787,7 @@ def main():
     print(f"║  Разработчик: {MODELS['developer']['name']}")
     print(f"║  QA Gate:     {MODELS['qa']['name']}")
     print(f"║  DevOps:      {MODELS['devops']['name']}")
-    print(f"║  Бюджет:      ${MAX_BUDGET_USD:.2f}")
+    print(f"║  Бюджет:      дешёвые модели после ${SOFT_BUDGET_USD:.2f}, стоп на ${HARD_BUDGET_USD:.2f}")
     print(f"╚══════════════════════════════════════════╝")
     print(f"\n📋 Задача: {task[:200]}{'...' if len(task) > 200 else ''}\n")
 
@@ -741,24 +801,55 @@ def main():
     _RUN_DIR = run_dir
     os.environ["AI_TEAM_RUN_DIR"] = str(run_dir.resolve())
     init_log(run_dir)
+    prices_source = _refresh_prices()
     log_event({
         "event": "run_start",
         "version": VERSION,
         "run_dir": str(run_dir.resolve()),
         "task": task[:2000],
         "models": {k: v["name"] for k, v in MODELS.items()},
-        "budget_usd": MAX_BUDGET_USD,
+        "prices": {k: list(v["price_per_1m"]) for k, v in MODELS.items()},
+        "prices_source": prices_source,
+        "soft_budget_usd": SOFT_BUDGET_USD,
+        "hard_budget_usd": HARD_BUDGET_USD,
     })
 
-    global _FIX_ATTEMPT
+    global _FIX_ATTEMPT, _CHEAP_MODE
+    _CHEAP_MODE = False
     start_time = time.time()
     tokens_in = tokens_out = 0
+    spent = 0.0
 
     def _accrue(u: dict) -> None:
-        """Суммировать токены всех фаз: usage приходит отдельно на каждый kickoff."""
-        nonlocal tokens_in, tokens_out
+        """Суммировать токены и стоимость всех фаз: usage приходит на каждый kickoff."""
+        nonlocal tokens_in, tokens_out, spent
         tokens_in += u["tokens_in"]
         tokens_out += u["tokens_out"]
+        spent += u.get("cost", 0.0)
+
+    def _budget_stop(next_phase: str) -> bool:
+        """Проверка бюджета между фазами. True — дальше не идём.
+
+        Раньше лимит проверялся один раз после всей работы, когда деньги уже
+        потрачены, и влиял только на пропуск деплоя.
+        """
+        nonlocal spent
+        global _CHEAP_MODE
+        if spent > HARD_BUDGET_USD:
+            log_event({"event": "budget", "level": "hard", "spent": round(spent, 4),
+                       "limit": HARD_BUDGET_USD, "next_phase": next_phase})
+            print(f"\nБЮДЖЕТ ИСЧЕРПАН: потрачено ${spent:.4f} при жёстком лимите "
+                  f"${HARD_BUDGET_USD:.2f}. Фаза {next_phase} не запускается, артефакты сохранены")
+            return True
+        if spent > SOFT_BUDGET_USD and not _CHEAP_MODE:
+            _CHEAP_MODE = True
+            roles = switch_to_fallback([architect, test_designer, developer, qa_gate, devops])
+            log_event({"event": "budget", "level": "soft", "spent": round(spent, 4),
+                       "limit": SOFT_BUDGET_USD, "next_phase": next_phase,
+                       "fallback_model": FALLBACK_MODEL, "roles": roles})
+            print(f"\nПОРОГ БЮДЖЕТА: потрачено ${spent:.4f} при мягком лимите "
+                  f"${SOFT_BUDGET_USD:.2f}. Дальше все роли идут на {FALLBACK_MODEL}")
+        return False
 
     # ── Фаза A: архитектура → тесты → код → неблокирующее ревю ──
     result_str, u = _phase("A", [architect, test_designer, developer, qa_gate],
@@ -774,8 +865,12 @@ def main():
     # чужой задачи. Теперь он запускается только на красном гейте и получает
     # дословный вывод pytest плюс файлы из traceback.
     fix_attempts_used = 0
+    budget_stopped = ""
     for attempt in range(1, MAX_FIX_ATTEMPTS + 1):
         if tests_green:
+            break
+        if _budget_stop(f"B{attempt}"):
+            budget_stopped = f"B{attempt}"
             break
         _FIX_ATTEMPT = attempt
         fix_attempts_used = attempt
@@ -814,19 +909,28 @@ def main():
                     break
     _FIX_ATTEMPT = 0
 
-    # ── Фаза C: упаковка — только на зелёных тестах ────────────
-    if tests_green:
+    # ── Фаза C: упаковка — только на зелёных тестах и в бюджете ───
+    if tests_green and not budget_stopped and not _budget_stop("C"):
         _, u = _phase("C", [devops], make_phase_c_tasks())
         _accrue(u)
         status = "✅ Успешно"
+    elif tests_green:
+        budget_stopped = budget_stopped or "C"
+        log_event({"event": "phase_skipped", "phase": "C", "reason": "budget_exceeded"})
+        print("\nФаза C пропущена: бюджет исчерпан на зелёных тестах")
+        status = "⚠️ Бюджет исчерпан, тесты зелёные"
     else:
-        log_event({"event": "phase_skipped", "phase": "C", "reason": "gate_red"})
-        print("\nФаза C пропущена: тесты красные после всех попыток правок")
+        reason = "budget_exceeded" if budget_stopped else "gate_red"
+        log_event({"event": "phase_skipped", "phase": "C", "reason": reason})
+        print("\nФаза C пропущена: " + (
+            "бюджет исчерпан до зелёных тестов" if budget_stopped
+            else "тесты красные после всех попыток правок"))
         print("PR НЕ СОЗДАЁТСЯ")
-        status = "❌ Tests failed"
+        status = ("⚠️ Бюджет исчерпан, тесты красные" if budget_stopped
+                  else "❌ Tests failed")
 
     duration = time.time() - start_time
-    cost = _estimate_cost(tokens_in, tokens_out)
+    cost = spent
 
     # ── Артефакты ──────────────────────────────────────────────
     # Колбэк записал всё по ходу прогона. Повторное извлечение из result
@@ -836,14 +940,12 @@ def main():
     (run_dir / "tests_output.txt").write_text(tests_summary)
 
     # ── Деплой и верификация (DevOps phase 2) ──────────────────
-    # Бюджет-гейт: если уже перерасход — пропускаем деплой (экономим ресурсы)
+    # Деплой — локальная docker-работа без вызовов модели, поэтому жёсткий
+    # лимит его не касается: при превышении прогон уже остановлен выше,
+    # и до этого кода со статусом Успешно дело не доходит.
     deploy_report = ""
     if status == "✅ Успешно":
-        if cost > MAX_BUDGET_USD:
-            deploy_report = f"⚠️ Деплой пропущен: бюджет превышен (${cost:.4f} > ${MAX_BUDGET_USD:.2f})"
-            print(f"\n⚠️ Бюджет превышен — деплой пропущен")
-        else:
-            deploy_report = deploy_and_verify(run_dir)
+        deploy_report = deploy_and_verify(run_dir)
 
     metrics = {
         "duration": duration,
@@ -865,8 +967,10 @@ def main():
     print(f"  Токенов вход:   {tokens_in:,}")
     print(f"  Токенов выход:  {tokens_out:,}")
     print(f"  Цена:           ${cost:.4f}")
-    if cost > MAX_BUDGET_USD:
-        print(f"  ⚠️ БЮДЖЕТ ПРЕВЫШЕН: ${cost:.4f} > ${MAX_BUDGET_USD:.2f}")
+    if cost > HARD_BUDGET_USD:
+        print(f"  ЖЁСТКИЙ ЛИМИТ ПРЕВЫШЕН: ${cost:.4f} > ${HARD_BUDGET_USD:.2f}")
+    elif cost > SOFT_BUDGET_USD:
+        print(f"  МЯГКИЙ ЛИМИТ ПРЕВЫШЕН: ${cost:.4f} > ${SOFT_BUDGET_USD:.2f}")
     print(f"  Задач собрано:  {len(_all_outputs)}")
     print(f"  Артефактов:     {len(saved_files)} файлов")
     print(f"  Отчёт:          {report_path}")
@@ -888,7 +992,9 @@ def main():
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
         "cost": round(cost, 4),
-        "cost_method": "avg_price_all_models",
+        "cost_method": "sum_of_phase_costs",
+        "cheap_mode": _CHEAP_MODE,
+        "budget_stopped_at": budget_stopped or None,
         "tests_green": tests_green,
         "fix_attempts": fix_attempts_used,
         "dispute": dispute or None,
