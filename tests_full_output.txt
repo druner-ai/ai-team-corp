@@ -1,0 +1,40 @@
+=== подготовка окружения ===
+playwright: бинарь не найден в venv — установка браузера пропущена
+
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /tmp/tmpyn5vhp3n/venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/deploy/ai-team-corp/output/20260812_213136
+configfile: pytest.ini
+collecting ... collected 28 items
+
+tests/test_game.py::TestInitState::test_snake_length_and_position PASSED [  3%]
+tests/test_game.py::TestInitState::test_deterministic_with_same_seed PASSED [  7%]
+tests/test_game.py::TestInitState::test_food_not_on_snake PASSED         [ 10%]
+tests/test_game.py::TestStep::test_movement PASSED                       [ 14%]
+tests/test_game.py::TestStep::test_wall_collision PASSED                 [ 17%]
+tests/test_game.py::TestStep::test_self_collision PASSED                 [ 21%]
+tests/test_game.py::TestStep::test_eat_food PASSED                       [ 25%]
+tests/test_game.py::TestStep::test_ignore_opposite_direction PASSED      [ 28%]
+tests/test_game.py::TestStep::test_game_over_state_unchanged PASSED      [ 32%]
+tests/test_game.py::TestStep::test_new_food_not_on_snake_after_eating PASSED [ 35%]
+tests/test_game.py::TestGameModuleNoIO::test_no_print_or_input_in_game_module PASSED [ 39%]
+tests/test_input_buffer.py::TestInputBuffer::test_push_ignores_opposite PASSED [ 42%]
+tests/test_input_buffer.py::TestInputBuffer::test_push_discards_when_full PASSED [ 46%]
+tests/test_input_buffer.py::TestInputBuffer::test_pop_returns_current_when_empty PASSED [ 50%]
+tests/test_input_buffer.py::TestInputBuffer::test_pop_fifo_order PASSED  [ 53%]
+tests/test_input_buffer.py::TestInputBuffer::test_pop_ignores_opposite_if_somehow_present PASSED [ 57%]
+tests/test_input_buffer.py::TestInputBuffer::test_size_property PASSED   [ 60%]
+tests/test_main.py::TestMain::test_quit_key_exits_with_code_0 PASSED     [ 64%]
+tests/test_main.py::TestMain::test_game_over_exits_with_code_0 PASSED    [ 67%]
+tests/test_main.py::TestMain::test_prints_game_over_score_on_quit PASSED [ 71%]
+tests/test_main.py::TestMain::test_prints_game_over_score_on_collision PASSED [ 75%]
+tests/test_renderer.py::TestRenderer::test_frame_height PASSED           [ 78%]
+tests/test_renderer.py::TestRenderer::test_line_width PASSED             [ 82%]
+tests/test_renderer.py::TestRenderer::test_border_symbols PASSED         [ 85%]
+tests/test_renderer.py::TestRenderer::test_snake_head_symbol PASSED      [ 89%]
+tests/test_renderer.py::TestRenderer::test_snake_body_symbol PASSED      [ 92%]
+tests/test_renderer.py::TestRenderer::test_food_symbol PASSED            [ 96%]
+tests/test_renderer.py::TestRenderer::test_empty_cell_is_space PASSED    [100%]
+
+============================== 28 passed in 0.11s ==============================

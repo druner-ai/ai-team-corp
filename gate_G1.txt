@@ -1,0 +1,100 @@
+pytest: error: unrecognized arguments: /home/deploy/ai-team-corp/output/20260812_213136/tests -vv --tb=long
+______________ TestMain.test_prints_game_over_score_on_collision _______________
+
+self = <test_main.TestMain object at 0x791c0c527290>
+
+    def test_prints_game_over_score_on_collision(self):
+        """ASSERT-03: On game over, prints 'Game Over! Score: <score>'."""
+        with patch('main.Game') as MockGame, \
+             patch('sys.stdin', io.StringIO('')), \
+             patch('sys.stdout', new_callable=io.StringIO) as mock_stdout, \
+             patch('select.select', return_value=([], [], [])), \
+             patch('termios.tcgetattr'), \
+             patch('termios.tcsetattr'), \
+             patch('tty.setraw'), \
+             patch('random.Random') as mock_random:
+            mock_random.return_value = __import__('random').Random(42)
+            mock_game_instance = MockGame.return_value
+            mock_game_instance.step.return_value.game_over = True
+            mock_game_instance.step.return_value.score = 30
+            with pytest.raises(SystemExit):
+                main.main()
+            output = mock_stdout.getvalue()
+>           assert 'Game Over! Score: 30' in output
+E           AssertionError: assert 'Game Over! Score: 30' in ''
+
+tests/test_main.py:79: AssertionError
+----------------------------- Captured stderr call -----------------------------
+usage: pytest [-h] [--width WIDTH] [--height HEIGHT]
+pytest: error: unrecognized arguments: /home/deploy/ai-team-corp/output/20260812_213136/tests -vv --tb=long
+_____________________ TestRenderer.test_snake_head_symbol ______________________
+
+self = <test_renderer.TestRenderer object at 0x791c0c429220>
+
+    def test_snake_head_symbol(self):
+        """ASSERT-14: Head is '@'."""
+        state = GameState(
+            width=20, height=10,
+            snake=[(10, 5), (9, 5), (8, 5)],
+            food=(15, 5),
+            score=0,
+            game_over=False,
+            direction=Direction.RIGHT
+        )
+        frame = render(state)
+        # Head at (10,5) -> row index 5+1=6 (0-indexed, plus top border), column 10+1=11
+>       assert frame[6][11] == '@'
+E       AssertionError: assert 'O' == '@'
+E         
+E         - @
+E         + O
+
+tests/test_renderer.py:66: AssertionError
+_____________________ TestRenderer.test_snake_body_symbol ______________________
+
+self = <test_renderer.TestRenderer object at 0x791c0c4294f0>
+
+    def test_snake_body_symbol(self):
+        """ASSERT-14: Body segments are 'O'."""
+        state = GameState(
+            width=20, height=10,
+            snake=[(10, 5), (9, 5), (8, 5)],
+            food=(15, 5),
+            score=0,
+            game_over=False,
+            direction=Direction.RIGHT
+        )
+        frame = render(state)
+        # Body at (9,5) -> row 6, col 10
+        assert frame[6][10] == 'O'
+        # Body at (8,5) -> row 6, col 9
+>       assert frame[6][9] == 'O'
+E       AssertionError: assert '@' == 'O'
+E         
+E         - O
+E         + @
+
+tests/test_renderer.py:82: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_input_buffer.py::TestInputBuffer::test_push_discards_when_full - assert <Direction.LEFT: (-1, 0)> == <Direction.UP: (0, -1)>
+ +  where <Direction.LEFT: (-1, 0)> = pop(<Direction.DOWN: (0, 1)>)
+ +    where pop = <input_buffer.InputBuffer object at 0x791c0c4299a0>.pop
+ +    and   <Direction.DOWN: (0, 1)> = Direction.DOWN
+ +  and   <Direction.UP: (0, -1)> = Direction.UP
+FAILED tests/test_main.py::TestMain::test_quit_key_exits_with_code_0 - assert 2 == 0
+ +  where 2 = SystemExit(2).code
+ +    where SystemExit(2) = <ExceptionInfo SystemExit(2) tblen=5>.value
+FAILED tests/test_main.py::TestMain::test_game_over_exits_with_code_0 - assert 2 == 0
+ +  where 2 = SystemExit(2).code
+ +    where SystemExit(2) = <ExceptionInfo SystemExit(2) tblen=5>.value
+FAILED tests/test_main.py::TestMain::test_prints_game_over_score_on_quit - AssertionError: assert 'Game Over! Score:' in ''
+FAILED tests/test_main.py::TestMain::test_prints_game_over_score_on_collision - AssertionError: assert 'Game Over! Score: 30' in ''
+FAILED tests/test_renderer.py::TestRenderer::test_snake_head_symbol - AssertionError: assert 'O' == '@'
+  
+  - @
+  + O
+FAILED tests/test_renderer.py::TestRenderer::test_snake_body_symbol - AssertionError: assert '@' == 'O'
+  
+  - O
+  + @
+========================= 7 failed, 21 passed in 0.16s =========================
