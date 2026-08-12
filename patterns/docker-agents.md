@@ -46,15 +46,49 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
+## Dockerfile для статического сайта (HTML, Canvas, SPA)
+
+Если продукт — статика без бэкенда, бери nginx. Но НЕ официальный образ
+`nginx` с `USER nginx`: в нём `/var/cache/nginx` принадлежит root, и nginx
+падает с `mkdir() "/var/cache/nginx/client_temp" failed (13: Permission
+denied)`. Используй `nginx-unprivileged` — он уже собран под uid 101 и
+слушает 8080.
+
+```dockerfile
+FROM nginxinc/nginx-unprivileged:1.26-alpine
+
+COPY index.html /usr/share/nginx/html/index.html
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1
+```
+
+Порт внутри контейнера — 8080, поэтому в docker-compose.yml маппинг
+`"8000:8080"`, а в healthcheck compose тот же адрес `http://localhost:8080/`.
+Порт 80 непривилегированному пользователю недоступен.
+
 ### Anti-patterns
 
 | ❌ Не делай | ✅ Делай | Почему |
 |:---|:---|:---|
+| `FROM nginx` + `USER nginx` | `FROM nginxinc/nginx-unprivileged` | Официальный образ падает: нет прав на `/var/cache/nginx` |
+| `EXPOSE 80` под non-root | `EXPOSE 8080` | Порты < 1024 требуют root |
 | `FROM python:3.12` | `FROM python:3.12-slim` | Slim на 500MB меньше |
 | `pip install` без wheels | Multi-stage с `--wheel-dir` | Кэширование слоёв |
 | `USER root` | `USER app` (non-root) | Безопасность |
 | `COPY . .` без .dockerignore | `.dockerignore` с `.git`, `__pycache__` | Скорость build |
 | `latest` теги | Фиксированные версии | Воспроизводимость |
+
+## Обязательная самопроверка
+
+Non-root в контейнере — самая частая причина падения на старте, причём
+`docker build` проходит успешно и проблема видна только в логах запуска.
+Перед сдачей мысленно проверь: под каким uid работает процесс, кому
+принадлежат каталоги, в которые он пишет, и доступен ли ему порт. Если
+образ базовый официальный, а ты добавляешь `USER`, права нужно выдать
+явно через `chown` в слое сборки — иначе бери готовый unprivileged-образ.
 
 ## docker-compose.yml
 

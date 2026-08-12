@@ -95,10 +95,17 @@ def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool
     if "test designer" in role_lower:
         # Test Designer пишет в tests/ + pytest.ini (конфиг для тестов)
         if not (p.parts[0] == "tests" or p.parts[0] == "test" or p.name == "pytest.ini"):
+            print(f"⚠️ Путь отброшен whitelist'ом роли '{role}': {filepath}")
             return None
     elif "devops" in role_lower:
-        allowed = {"dockerfile", "docker-compose.yml", ".dockerignore", ".github", ".env.example", "readme.md"}
-        if p.parts[0] not in allowed:
+        # Сравниваем в нижнем регистре: агент пишет "Dockerfile" по конвенции
+        # Docker, а список задан строчными буквами.
+        allowed = {
+            "dockerfile", "docker-compose.yml", "docker-compose.yaml",
+            ".dockerignore", ".github", ".env.example", "readme.md",
+        }
+        if p.parts[0].lower() not in allowed:
+            print(f"⚠️ Путь отброшен whitelist'ом роли '{role}': {filepath}")
             return None
     elif "разработ" in role_lower and protect_tests:
         # fix/ci-fix: не трогаем тесты

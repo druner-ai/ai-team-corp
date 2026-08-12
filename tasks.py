@@ -64,23 +64,42 @@ def make_tasks(task_description: str, run_dir: str = "") -> list[Task]:
 
         ПРАВИЛА ДЛЯ ПУТЕЙ:
         - Все тесты в директории tests/
-        - conftest.py — fixtures (БД, client)
-        - test_*.py — тесты для каждого endpoint
+        - conftest.py — fixtures (для API: БД и client; для браузерного UI:
+          отдача статики; фикстуру page НЕ переопределяй — её даёт плагин)
+        - test_*.py — тесты по функциональным блокам продукта
         - Каждый путь ДОЛЖЕН иметь расширение .py
 
-        ПАТТЕРНЫ ТЕСТИРОВАНИЯ (обязательно следуй):
+        ПАТТЕРНЫ ТЕСТИРОВАНИЯ ДЛЯ ПРОЕКТОВ С API И БД:
         {_patterns['pytest']}
 
-        ТРЕБОВАНИЯ К ТЕСТАМ:
-        - Каждый тест проверяет КОНТРАКТ: "система ДОЛЖНА вернуть X при Y"
+        ПАТТЕРНЫ ТЕСТИРОВАНИЯ ДЛЯ БРАУЗЕРНОГО UI (HTML, Canvas, SPA):
+        {_patterns['playwright']}
+
+        СНАЧАЛА ОПРЕДЕЛИ ТИП ПРОЕКТА по архитектурному документу и следуй
+        ТОЛЬКО подходящему набору паттернов. Смешивать их нельзя: синхронный
+        pytest-playwright и async-стиль pytest-asyncio несовместимы.
+
+        ТРЕБОВАНИЯ К ТЕСТАМ — ОБЩИЕ:
+        - Каждый тест проверяет КОНТРАКТ: "система ДОЛЖНА сделать X при Y"
+        - Включи тесты на граничные случаи и ошибки
+        - НЕ пиши код реализации — только тесты
+        - Тесты не должны зависеть от порядка запуска и друг от друга
+
+        ЕСЛИ ПРОЕКТ — HTTP API С БД:
         - Проверяй и status code, и JSON response
-        - Включи тесты на ошибки (404, 422, 400)
+        - Тесты на 404, 422, 400
         - conftest.py ДОЛЖЕН инициализировать БД (in-memory SQLite)
         - Используй scope="function" — новая БД на каждый тест
         - Используй app.dependency_overrides для подмены БД
-        - НЕ пиши код реализации — только тесты
 
-        КРИТИЧНО — ОЖИДАНИЯ ОТ URL:
+        ЕСЛИ ПРОЕКТ — БРАУЗЕРНЫЙ UI (HTML, Canvas, SPA):
+        - Только синхронный стиль: ни одного async def в tests/
+        - НЕ добавляй asyncio_mode в pytest.ini и pytest-asyncio в зависимости
+        - Порт сервера статики НЕ хардкодь: порт 0, ядро выдаст свободный
+        - Состояние проверяй через page.evaluate() по контракту window.__game,
+          а не по пикселям canvas; в тестах зафиксируй этот контракт явно
+
+        КРИТИЧНО — ОЖИДАНИЯ ОТ URL (только если в API есть URL-поля):
         Pydantic HttpUrl автоматически нормализует URL (добавляет trailing slash).
         Вместо проверки точного равенства original_url используй:
           assert data["original_url"].rstrip("/") == "https://example.com"
@@ -135,14 +154,25 @@ def make_tasks(task_description: str, run_dir: str = "") -> list[Task]:
         - Если тест требует поле 'short_code' — возвращай именно 'short_code'
         - Если тест требует 404 — возвращай 404, не 400
         - Включай requirements.txt (все runtime-зависимости)
-        - Включай requirements-dev.txt (все test-зависимости: pytest, httpx, pytest-asyncio, aiosqlite)
+        - Включай requirements-dev.txt со ВСЕМИ test-зависимостями:
+          для API — pytest, httpx, pytest-asyncio, aiosqlite;
+          для браузерного UI — pytest и pytest-playwright, БЕЗ pytest-asyncio
         - Включай pytest.ini с секцией [pytest] и pythonpath = .
-        - КРИТИЧНО: используй FastAPI dependency injection для БД (Depends(get_db))
+        - ЕСЛИ ПРОЕКТ — HTTP API С БД: используй FastAPI dependency injection
+          для БД (Depends(get_db))
         - ЗАПРЕЩЕНО: глобальные переменные для подключения к БД
         - get_db() должна быть generator function (yield, не return)
         - Тесты подменяют БД через app.dependency_overrides — это работает только с DI
 
-        КРИТИЧНО — ЕДИНОЕ ПРИЛОЖЕНИЕ:
+        КРИТИЧНО — ЕСЛИ ПРОЕКТ БРАУЗЕРНЫЙ UI:
+        - Соблюдай контракт тестируемости, который зафиксировали тесты:
+          публикуй состояние и управление в window (например window.__game
+          с полями state, reset(), step(), setDirection()). Без этого
+          браузерные тесты физически не смогут проверить логику.
+        - step() выполняет ровно один игровой тик и не зависит от таймера
+        - Требования ниже про FastAPI к такому проекту НЕ применяются
+
+        КРИТИЧНО — ЕДИНОЕ ПРИЛОЖЕНИЕ (для HTTP API):
         - Создавай РОВНО ОДИН файл app/main.py с FastAPI приложением
         - ВСЕ endpoints определяй в main.py (или подключай роутеры через app.include_router)
         - ЗАПРЕЩЕНО создавать app/routers/ если main.py их не подключает
@@ -187,6 +217,18 @@ def make_tasks(task_description: str, run_dir: str = "") -> list[Task]:
         4. **Обработка ошибок**: все ли исключения обработаны? Нет ли голых try/except?
         5. **Валидация**: проверяются ли входные данные на всех endpoint-ах?
         6. **Style guide**: PEP 8, нейминг, типизация
+        7. **Совместимость тестового стека** — проверяй ВСЕГДА, даже если
+           тесты прошли, потому что несовместимость даёт ERROR, а не FAILED:
+           - если в tests/ используются фикстуры page/browser/context, то
+             стек синхронный: ни одного async def, ни asyncio_mode в
+             pytest.ini, ни pytest-asyncio в requirements-dev.txt;
+           - фикстуры page/browser/context не переопределены своими;
+           - порт локального сервера в тестах не захардкожен, сервер
+             гасится в teardown;
+           - если в зависимостях есть pytest-playwright, в CI обязан быть
+             отдельный шаг playwright install --with-deps chromium:
+             pip браузер не ставит.
+           Любое нарушение — 🔴, потому что упадут ВСЕ тесты сразу.
 
         ФОРМАТ ОТВЕТА:
         Для каждой найденной проблемы:
@@ -241,10 +283,16 @@ def make_tasks(task_description: str, run_dir: str = "") -> list[Task]:
     ИНФОРМАЦИЯ О ЗАВИСИМОСТЯХ:
     Разработчик должен был создать requirements.txt и requirements-dev.txt.
     Если requirements-dev.txt отсутствует — СОЗДАЙ его, прочитав все импорты в tests/.
-    Типичные test-зависимости: pytest, httpx, pytest-asyncio, aiosqlite, freezegun.
+    Типичные test-зависимости для API: pytest, httpx, pytest-asyncio,
+    aiosqlite, freezegun. Для браузерного UI: pytest, pytest-playwright
+    (и НИКОГДА pytest-asyncio — он ломает синхронный Playwright).
 
     В CI (.github/workflows/ci.yml) устанавливай ОБА:
     pip install -r requirements.txt -r requirements-dev.txt
+
+    Если в зависимостях есть pytest-playwright, в CI ОБЯЗАТЕЛЕН отдельный
+    шаг установки браузера — pip его не ставит:
+    playwright install --with-deps chromium
     """
 
     docker_task = Task(

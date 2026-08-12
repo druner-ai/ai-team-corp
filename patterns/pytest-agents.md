@@ -1,5 +1,9 @@
 # Pytest Patterns для Разработчика и QA
 
+Область применения: проекты с HTTP API и базой данных. Если продукт —
+интерфейс в браузере (HTML, Canvas, SPA), применяй `playwright-agents.md`:
+требования про БД, AsyncClient и dependency_overrides там неприменимы.
+
 Машиночитаемые паттерны для тестирования FastAPI + SQLite (без ORM).
 
 ## Структура тестов
@@ -155,6 +159,7 @@ async def test_redirect_not_found(client: AsyncClient):
 | `assert resp.status_code == 200` без проверки тела | Проверяй и код, и JSON |
 | `print()` в тестах | `assert` с сообщением |
 | `time.sleep()` | `await asyncio.sleep()` |
+| `asyncio_mode = auto` без `async def test_*` | не указывать ключ вовсе |
 
 ## QA Gate checklist
 
