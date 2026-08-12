@@ -244,16 +244,56 @@ def on_task_complete(output: TaskOutput):
         print(f"   💾 {task_name}: записано {len(written)} файлов в {_RUN_DIR.name}/")
 
 
+# ─── права записи по ролям ─────────────────────────────
+# Раньше права были цепочкой if/elif по подстрокам в названии роли,
+# и роль, не попавшая ни в одну ветку, получала полный доступ. Именно так
+# Архитектор в прогонах 20260812_112451 и _134959 записал в корень мусорные
+# файлы "[build-system]" и "@dataclass(frozen=True)" — обломки код-блоков из его
+# markdown-документа. Теперь права — таблица, отсутствие роли в таблице значит
+# запрет, а deny проверяется раньше allow.
+WRITE_RULES: dict[str, dict[str, tuple[str, ...]]] = {
+    "test designer": {"allow": ("tests/", "pytest.ini", "conftest.py"), "deny": ()},
+    "арбитр":       {"allow": ("*",), "deny": ()},
+    "разработ":     {"allow": ("*",), "deny": ("tests/",)},
+    "devops":        {"allow": ("Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+                                ".dockerignore", ".github/", ".env.example", "README.md"),
+                      "deny": ()},
+    "архитектор":   {"allow": ("docs/", "SPEC.md", "ARCHITECTURE.md", "README.md"), "deny": ()},
+    "qa":            {"allow": (), "deny": ("*",)},   # QA не пишет файлы вовсе
+}
+
+
+def _matches(rel: str, pattern: str) -> bool:
+    """Путь rel подпадает под правило: каталог по префиксу, иначе имя фаила."""
+    if pattern == "*":
+        return True
+    rel_l, pat_l = rel.lower(), pattern.lower()
+    if pattern.endswith("/"):
+        return rel_l == pat_l[:-1] or rel_l.startswith(pat_l)
+    # Имя файла сравниваем без регистра: агент пишет "Dockerfile" по конвенции.
+    return rel_l == pat_l or rel_l.split("/")[-1] == pat_l
+
+
+def _write_allowed(role: str, rel: str) -> tuple[bool, str]:
+    """Может ли роль записать по пути rel (относительному run_dir)."""
+    role_lower = role.lower()
+    rules = next((r for key, r in WRITE_RULES.items() if key in role_lower), None)
+    if rules is None:
+        return False, f"роль '{role}' не описана в WRITE_RULES"
+    for pattern in rules["deny"]:
+        if _matches(rel, pattern):
+            return False, f"запрет '{pattern}' для роли '{role}'"
+    for pattern in rules["allow"]:
+        if _matches(rel, pattern):
+            return True, ""
+    return False, f"путь вне разрешённых для роли '{role}'"
+
+
 def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool = False, protect_tests: bool = False, role: str = "") -> Path | None:
     """Безопасно записать файл, обрабатывая коллизии имён и path traversal.
 
-    protect_tests=True — отклонять запись в tests/** (используется на fix/ci-fix
-    этапах, чтобы модель не перезаписывала тесты, которые определяют контракт).
-
-    role — whitelist путей по ролям:
-    - "test designer": только tests/**
-    - "devops": только Dockerfile, docker-compose.yml, .dockerignore, .github/**
-    - "разработчик" (fix): всё кроме tests/**
+    Права роли берутся из WRITE_RULES. protect_tests сохранён как дополнительный
+    запрет на tests/** для этапов fix и ci-fix независимо от роли.
     """
     # Нормализуем путь
     if filepath.startswith("path/to/"):
@@ -266,34 +306,21 @@ def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool
         return None
     full_path = (run_dir / filepath).resolve()
     try:
-        full_path.relative_to(run_dir.resolve())
+        rel = str(full_path.relative_to(run_dir.resolve())).replace("\\", "/")
     except ValueError:
         return None
 
-    # Whitelist по ролям
-    role_lower = role.lower()
-    if "test designer" in role_lower:
-        # Test Designer пишет в tests/ + pytest.ini (конфиг для тестов)
-        if not (p.parts[0] == "tests" or p.parts[0] == "test" or p.name == "pytest.ini"):
-            print(f"⚠️ Путь отброшен whitelist'ом роли '{role}': {filepath}")
-            return None
-    elif "devops" in role_lower:
-        # Сравниваем в нижнем регистре: агент пишет "Dockerfile" по конвенции
-        # Docker, а список задан строчными буквами.
-        allowed = {
-            "dockerfile", "docker-compose.yml", "docker-compose.yaml",
-            ".dockerignore", ".github", ".env.example", "readme.md",
-        }
-        if p.parts[0].lower() not in allowed:
-            print(f"⚠️ Путь отброшен whitelist'ом роли '{role}': {filepath}")
-            return None
-    elif "разработ" in role_lower and protect_tests:
-        # fix/ci-fix: не трогаем тесты
-        if p.parts[0] == "tests" or p.parts[0] == "test":
-            return None
+    # Права роли по таблице
+    ok, reason = _write_allowed(role, rel)
+    if not ok:
+        print(f"Путь отклонён: {filepath} — {reason}")
+        log_event({"event": "write_denied", "role": role, "path": rel, "reason": reason})
+        return None
 
-    # Защита тестов: fix/ci-fix не имеют права менять tests/**
-    if protect_tests and (p.parts[0] == "tests" or p.parts[0] == "test"):
+    # Защита тестов: этапы fix/ci-fix не меняют tests/** ни при какой роли
+    if protect_tests and p.parts[0] in ("tests", "test"):
+        log_event({"event": "write_denied", "role": role, "path": rel,
+                   "reason": "protect_tests"})
         return None
 
     # Пропускаем директории
