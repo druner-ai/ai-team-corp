@@ -31,16 +31,32 @@ def _read_ci_recipe(code_dir: Path) -> str:
     return "\n".join(recipe)
 
 
+_REQ_SKIP_DIRS = {"node_modules", "__pycache__", ".git"}
+
+
+def _find_req_files(code_dir: Path) -> list:
+    """Найти все requirements*.txt рекурсивно.
+
+    Агенты вправе класть зависимости в подкаталог (backend/requirements.txt);
+    поиск только в корне давал пустой uv pip install и каскад красных гейтов
+    с нулями (прогон 20260813_051701). Каталоги этапов и venv исключаются."""
+    found = []
+    for f in sorted(code_dir.rglob("requirements*.txt")):
+        parts = f.relative_to(code_dir).parts
+        if any(p.startswith(("stage_", ".")) or p in _REQ_SKIP_DIRS for p in parts[:-1]):
+            continue
+        found.append(f)
+    return found
+
+
 def _read_requirements(code_dir: Path) -> str:
     """Собрать текст всех файлов зависимостей проекта."""
     chunks = []
-    for name in ("requirements.txt", "requirements-dev.txt"):
-        f = code_dir / name
-        if f.exists():
-            try:
-                chunks.append(f.read_text(errors="replace"))
-            except OSError:
-                continue
+    for f in _find_req_files(code_dir):
+        try:
+            chunks.append(f.read_text(errors="replace"))
+        except OSError:
+            continue
     return "\n".join(chunks)
 
 
@@ -135,8 +151,7 @@ def run_tests(code_directory: str = "") -> str:
         return (f"ERROR: No tests/ directory found in {code_dir}. "
                 f"Содержимое каталога: {existing}")
 
-    req_file = code_dir / "requirements.txt"
-    req_dev_file = code_dir / "requirements-dev.txt"
+    req_files = _find_req_files(code_dir)
 
     output_lines = []
 
@@ -159,11 +174,11 @@ def run_tests(code_directory: str = "") -> str:
 
         # Устанавливаем зависимости через uv pip (с кэшем — 5-10 сек)
         output_lines.append("Installing dependencies (uv pip)...")
-        install_cmd = [_UV, "pip", "install", "--python", str(python), "-q"]
-        if req_file.exists():
-            install_cmd.extend(["-r", str(req_file)])
-        if req_dev_file.exists():
-            install_cmd.extend(["-r", str(req_dev_file)])
+        # pytest ставится всегда: без него uv pip install без аргументов падает,
+        # а pytest в venv нужен в любом случае
+        install_cmd = [_UV, "pip", "install", "--python", str(python), "-q", "pytest"]
+        for rf in req_files:
+            install_cmd.extend(["-r", str(rf)])
 
         result = subprocess.run(
             install_cmd,
@@ -223,8 +238,7 @@ def run_tests_quiet(code_directory: str) -> tuple[bool, str]:
     if not tests_dir.exists():
         return False, "No tests/ directory found"
 
-    req_file = code_dir / "requirements.txt"
-    req_dev_file = code_dir / "requirements-dev.txt"
+    req_files = _find_req_files(code_dir)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         venv_path = Path(tmpdir) / "venv"
@@ -238,11 +252,9 @@ def run_tests_quiet(code_directory: str) -> tuple[bool, str]:
         python = venv_path / "bin" / "python"
         pytest = venv_path / "bin" / "pytest"
 
-        install_cmd = [_UV, "pip", "install", "--python", str(python), "-q"]
-        if req_file.exists():
-            install_cmd.extend(["-r", str(req_file)])
-        if req_dev_file.exists():
-            install_cmd.extend(["-r", str(req_dev_file)])
+        install_cmd = [_UV, "pip", "install", "--python", str(python), "-q", "pytest"]
+        for rf in req_files:
+            install_cmd.extend(["-r", str(rf)])
 
         result = subprocess.run(
             install_cmd, capture_output=True, text=True,
