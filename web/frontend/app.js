@@ -19,6 +19,8 @@ function loadTab(name) {
   if (name === 'runs') loadRuns();
   if (name === 'repos') loadRepos();
   if (name === 'config') loadConfig();
+  if (name === 'roles') loadRoles();
+  if (name === 'pipeline') loadPipeline();
 }
 
 async function api(path, opts) {
@@ -160,6 +162,34 @@ async function loadConfig() {
       <tr><td>Доводка после арбитра (D2)</td><td><b>${cfg.max_arbiter_fix_attempts}</b></td></tr>
     </table>
     <p class="hint">Правки бюджета/лимитов — следующим шагом (пишутся в team_config.json + env).</p>`;
+}
+
+// ── Роли ──────────────────────────────────────────────────────
+async function loadRoles() {
+  const roles = await api('/roles');
+  $('#roles').innerHTML = roles.map(r => `
+    <div class="role-card">
+      <h3>${esc(r.role)} ${r.model ? `<code>${esc(r.model)}</code>` : ''}</h3>
+      <p class="role-goal"><b>Цель:</b> ${esc(r.goal)}</p>
+      <details><summary>Backstory</summary><p>${esc(r.backstory)}</p></details>
+    </div>`).join('');
+}
+
+// ── Пайплайн ──────────────────────────────────────────────────
+async function loadPipeline() {
+  const d = await api('/pipeline');
+  const c = d.config;
+  $('#pipeline').innerHTML = `
+    <p class="hint">fix-попыток <b>${c.max_fix_attempts}</b> · доводка после арбитра <b>${c.max_arbiter_fix_attempts}</b> · бюджет soft/hard <b>$${c.soft_budget}</b>/<b>$${c.hard_budget}</b></p>
+    <table><tr><th>Фаза</th><th>Исполнитель</th><th>Что делает</th><th>Гейт</th></tr>
+    ${d.stages.map(s => `
+      <tr>
+        <td><b>${esc(s.phase)}</b></td>
+        <td>${esc(s.actor)}</td>
+        <td>${esc(s.desc)}</td>
+        <td><code>${esc(s.gate || '—')}</code></td>
+      </tr>`).join('')}
+    </table>`;
 }
 
 loadDashboard();

@@ -50,6 +50,18 @@ MODEL_CATALOG = [
     ("qwen/qwen3-coder", "Qwen3 Coder"),
 ]
 
+# Схема фаз пайплайна (описание для UI; оркестрация живёт в main.py)
+PIPELINE_STAGES = [
+    {"phase": "A0", "actor": "Test Designer", "desc": "Baseline-тесты на текущее поведение (если в репо нет tests/)", "gate": "G_base"},
+    {"phase": "A1", "actor": "Архитектор", "desc": "Архитектурный документ — единственный источник правды", "gate": None},
+    {"phase": "A2", "actor": "Test Designer → Разработчик → QA", "desc": "Тесты по спеке → код под тесты → ревью", "gate": "G1 (связь тесты↔спека)"},
+    {"phase": "B", "actor": "Разработчик / Test Designer", "desc": "Fix-цикл: ошибки сбора → Test Designer, assert-падения → Разработчик", "gate": "G2 (pytest)"},
+    {"phase": "C", "actor": "DevOps", "desc": "Dockerfile, docker-compose, CI", "gate": "G3 (тесты после упаковки)"},
+    {"phase": "D", "actor": "Арбитр", "desc": "Разрешает спор тест↔код↔спека; единственный, кто может менять tests/", "gate": "G2_arb"},
+    {"phase": "D2", "actor": "Разработчик", "desc": "Доводка кода арбитра, если он сам не прошёл тесты", "gate": "G2_arbfix"},
+    {"phase": "→", "actor": "Оркестратор", "desc": "Зелёные тесты → Pull Request (или publish-стадия)", "gate": None},
+]
+
 app = FastAPI(title="AI Team Control")
 
 
@@ -203,6 +215,39 @@ def get_run(run_id: str):
 def list_repos():
     return [{"name": n, "desc": d, "url": f"https://github.com/druner-ai/{n}"}
             for n, d in REPOS]
+
+
+@app.get("/api/roles")
+def list_roles():
+    """Роли команды: goal/backstory из agents.py + привязанная модель."""
+    import agents
+    result = []
+    for key, a in agents.AGENTS.items():
+        model = ""
+        if getattr(a, "llm", None) is not None:
+            model = (getattr(a.llm, "model", "") or "").replace("openai/", "", 1)
+        result.append({
+            "key": key,
+            "role": a.role,
+            "goal": a.goal,
+            "backstory": a.backstory,
+            "model": model,
+        })
+    return result
+
+
+@app.get("/api/pipeline")
+def pipeline():
+    """Схема фаз пайплайна + настроенные лимиты."""
+    return {
+        "stages": PIPELINE_STAGES,
+        "config": {
+            "max_fix_attempts": config.MAX_FIX_ATTEMPTS,
+            "max_arbiter_fix_attempts": config.MAX_ARBITER_FIX_ATTEMPTS,
+            "soft_budget": config.SOFT_BUDGET_USD,
+            "hard_budget": config.HARD_BUDGET_USD,
+        },
+    }
 
 
 # ── Фронт ─────────────────────────────────────────────────────
