@@ -223,6 +223,39 @@ def _status_context(run_dir: Path) -> str:
     return "=== СТАТУС ПРОГОНА (что уже было сделано) ===\n" + text[-3000:] + "\n\n"
 
 
+# ─── Cross-run память (Loop Engineering: Memory = источник правды) ──
+# Каждый прогон в режиме --enhance читает историю проекта и дописывает в неё
+# свой итог. Архитектор следующего прогона видит «что уже решали и как» —
+# вместо того чтобы стартовать с нуля и повторять старые ошибки.
+
+MEMORY_DIR = Path(__file__).resolve().parent / "memory"
+
+
+def _memory_path(repo: str) -> Path:
+    """Файл памяти проекта: memory/<owner>__<repo>.md."""
+    return MEMORY_DIR / (repo.replace("/", "__") + ".md")
+
+
+def _memory_read(repo: str) -> str:
+    """Прочитать историю проекта для инъекции в промпт Архитектора."""
+    p = _memory_path(repo)
+    if not p.is_file():
+        return ""
+    text = p.read_text(encoding="utf-8", errors="ignore").strip()
+    return text if text else ""
+
+
+def _memory_append(repo: str, entry: str) -> None:
+    """Дописать запись в память проекта."""
+    p = _memory_path(repo)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            f.write(entry.rstrip() + "\n\n")
+    except OSError:
+        pass
+
+
 def _gate(name: str, run_dir: Path) -> tuple[bool, str]:
     """Детерминированный гейт: pytest. Единственный источник вердикта."""
     from tools import run_tests_quiet
@@ -1203,6 +1236,7 @@ def main():
     # задачи шли одним Crew, проверить спеку до написания тестов было негде —
     # код между задачами одного Crew не выполняется.
     existing_code = _existing_code_summary(run_dir) if enhance_repo else ""
+    memory = _memory_read(enhance_repo) if enhance_repo else ""
 
     # ── Доработка: если в репо нет тестов — команда пишет базовые ──
     if enhance_repo and not _has_tests(run_dir) and not _budget_stop("A0"):
@@ -1213,7 +1247,8 @@ def main():
         print(f"Базовые тесты: {'✅ зелёные' if base_ok else '❌ ' + base_summary[-160:]}")
 
     spec, u = _phase("A1", [architect],
-                     [make_spec_task(task, enhance=bool(enhance_repo), existing_code=existing_code)])
+                     [make_spec_task(task, enhance=bool(enhance_repo),
+                                     existing_code=existing_code, memory=memory)])
     _accrue(u)
 
     # ── Гейт G0: спека говорит проверяемыми утверждениями ──
@@ -1477,6 +1512,19 @@ def main():
     }
 
     report_path = save_report(run_dir, metrics, deploy_report)
+
+    # ── Cross-run память: дописать итог прогона в память проекта ──
+    if enhance_repo:
+        entry = (
+            f"## Прогон {timestamp}\n"
+            f"- Задача: {task[:200]}\n"
+            f"- Статус: {status}\n"
+            f"- Тесты: {'зелёные' if tests_green else 'красные'} "
+            f"({trace_final['covered']}/{trace_final['spec_asserts']} утверждений покрыто)\n"
+        )
+        if arbiter_decision:
+            entry += f"- Арбитр: {arbiter_decision[:300]}\n"
+        _memory_append(enhance_repo, entry)
 
     print(f"\n{'─' * 54}")
     print(f"📊 Метрики выполнения")
