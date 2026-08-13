@@ -39,6 +39,16 @@ REPOS = [
     ("internet-radio", "интернет-радио"),
 ]
 
+# Каталог моделей для дропдауна (OpenRouter ID → подпись)
+MODEL_CATALOG = [
+    ("z-ai/glm-5.2", "GLM-5.2 (архитектор)"),
+    ("deepseek/deepseek-v4-pro", "DeepSeek V4 Pro"),
+    ("deepseek/deepseek-v4-flash", "DeepSeek V4 Flash (дешёвый)"),
+    ("moonshotai/kimi-k2.7-code", "Kimi K2.7 Code (планирование)"),
+    ("mistralai/codestral-2508", "Codestral 2508"),
+    ("qwen/qwen3-coder", "Qwen3 Coder"),
+]
+
 app = FastAPI(title="AI Team Control")
 
 
@@ -90,6 +100,11 @@ def list_models():
         {"role": role, "label": ROLE_LABELS.get(role, role), **cfg}
         for role, cfg in models.items()
     ]
+
+
+@app.get("/api/models/catalog")
+def model_catalog():
+    return [{"id": mid, "label": label} for mid, label in MODEL_CATALOG]
 
 
 @app.put("/api/models/{role}")

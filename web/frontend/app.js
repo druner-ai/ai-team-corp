@@ -58,25 +58,30 @@ async function loadDashboard() {
 
 // ── Модели ────────────────────────────────────────────────────
 async function loadModels() {
-  const models = await api('/models');
+  const [models, catalog] = await Promise.all([api('/models'), api('/models/catalog')]);
   $('#models').innerHTML = `
     <table><tr><th>Роль</th><th>Модель</th><th>temp</th><th>timeout</th><th></th></tr>
-    ${models.map(m => `
+    ${models.map(m => {
+      const currentInCatalog = catalog.some(c => c.id === m.name);
+      const opts = (currentInCatalog ? '' : `<option value="${esc(m.name)}" selected>${esc(m.name)} (текущая)</option>`)
+        + catalog.map(c => `<option value="${esc(c.id)}" ${c.id === m.name ? 'selected' : ''}>${esc(c.label)}</option>`).join('');
+      return `
       <tr>
         <td>${esc(m.label)}</td>
-        <td><input class="m-name" data-role="${m.role}" value="${esc(m.name)}"></td>
+        <td><select class="m-name" data-role="${m.role}">${opts}</select></td>
         <td><input class="m-temp" data-role="${m.role}" type="number" step="0.1" value="${m.temperature}"></td>
         <td><input class="m-timeout" data-role="${m.role}" type="number" value="${m.timeout}"></td>
         <td><button data-role="${m.role}" class="save-model">💾</button></td>
-      </tr>`).join('')}
+      </tr>`;
+    }).join('')}
     </table>
-    <p class="hint">Модель — OpenRouter ID (напр. <code>deepseek/deepseek-v4-pro</code>). Применится со следующего прогона.</p>`;
+    <p class="hint">Модель — из каталога OpenRouter. Применится со следующего прогона.</p>`;
 
   document.querySelectorAll('.save-model').forEach(btn => {
     btn.addEventListener('click', async () => {
       const role = btn.dataset.role;
       const body = {
-        name: $(`.m-name[data-role="${role}"]`).value.trim(),
+        name: $(`.m-name[data-role="${role}"]`).value,
         temperature: parseFloat($(`.m-temp[data-role="${role}"]`).value),
         timeout: parseInt($(`.m-timeout[data-role="${role}"]`).value),
       };
