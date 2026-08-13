@@ -103,6 +103,7 @@ async function loadRuns() {
   const runs = await api('/runs');
   if (!runs.length) { $('#runs').innerHTML = '<p>Прогонов пока нет.</p>'; return; }
   $('#runs').innerHTML = `
+    <div id="run-detail"></div>
     <table><tr><th>Прогон</th><th>Статус</th><th>Цена</th><th>Время</th><th></th></tr>
     ${runs.map(r => `
       <tr>
@@ -112,15 +113,24 @@ async function loadRuns() {
         <td>${esc(r.time || '—')}с</td>
         <td><button class="view-run" data-id="${r.id}">открыть</button></td>
       </tr>`).join('')}
-    </table>
-    <div id="run-detail"></div>`;
+    </table>`;
 
   document.querySelectorAll('.view-run').forEach(btn => {
     btn.addEventListener('click', async () => {
-      const d = await api('/runs/' + btn.dataset.id);
-      const gates = Object.entries(d.gates).map(([k, v]) =>
-        `<details><summary>${esc(k)}</summary><pre>${esc(v)}</pre></details>`).join('');
-      $('#run-detail').innerHTML = `<h3>${esc(d.id)}</h3>${gates}<pre>${esc(d.report.slice(0, 4000))}</pre>`;
+      const detail = $('#run-detail');
+      detail.innerHTML = '<p>Загрузка…</p>';
+      try {
+        const d = await api('/runs/' + btn.dataset.id);
+        const gates = Object.entries(d.gates || {}).map(([k, v]) =>
+          `<details><summary>${esc(k)}</summary><pre>${esc(v)}</pre></details>`).join('');
+        detail.innerHTML =
+          `<h3>Прогон ${esc(d.id)} <button class="close-detail">✕</button></h3>` +
+          `${gates}<pre>${esc((d.report || '').slice(0, 4000))}</pre>`;
+        detail.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        detail.querySelector('.close-detail').addEventListener('click', () => detail.innerHTML = '');
+      } catch (e) {
+        detail.innerHTML = `<p class="err">Не удалось загрузить: ${esc(e.message)}</p>`;
+      }
     });
   });
 }
