@@ -31,7 +31,7 @@ from crewai.tasks.task_output import TaskOutput
 
 from config import (MODELS, FALLBACK_MODEL, PHASE_MODEL_WEIGHTS, SOFT_BUDGET_USD,
                     HARD_BUDGET_USD, MAX_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS,
-                    MAX_ARBITER_FIX_ATTEMPTS, OUTPUT_DIR, VERSION)
+                    MAX_ARBITER_FIX_ATTEMPTS, TEST_TIMEOUT, OUTPUT_DIR, VERSION)
 from agents import (architect, test_designer, developer, qa_gate, devops,
                     contract_arbiter, switch_to_fallback)
 from tasks import (make_spec_task, make_spec_fix_task, make_baseline_tests_task,
@@ -1302,8 +1302,7 @@ def main():
         # несуществующую зависимость и увела 35/11 в 18/14/14.
         before_score = _score(tests_summary)
         snap = _code_snapshot(run_dir)
-        context = _status_context(run_dir) + _collect_traceback_context(
-            tests_summary, run_dir, fallback=result_str)
+        context = _fix_context(run_dir, tests_summary, fallback=result_str)
         counts = _parse_pytest_counts(tests_summary)
         if counts["errors"] > 0:
             # Ошибки сбора (NameError/ImportError) — набор не собирается: чинит
@@ -1369,8 +1368,7 @@ def main():
             tests_before = _tests_snapshot(run_dir)
             code_snap = _code_snapshot(run_dir)
             before_score = _score(tests_summary)
-            context = _status_context(run_dir) + _collect_traceback_context(
-                tests_summary, run_dir, fallback=result_str)
+            context = _fix_context(run_dir, tests_summary, fallback=result_str)
             arb_out, u = _phase("D", [contract_arbiter],
                                 [make_arbiter_task(tests_summary, context, arb_spec,
                                                    dispute,
@@ -1434,8 +1432,7 @@ def main():
                 break
             d2_before = _score(tests_summary)
             d2_snap = _code_snapshot(run_dir)
-            d2_ctx = _status_context(run_dir) + _collect_traceback_context(
-                tests_summary, run_dir, fallback=result_str)
+            d2_ctx = _fix_context(run_dir, tests_summary, fallback=result_str)
             _, u = _phase(f"D2{d2_attempt}", [developer],
                           [make_fix_task(tests_summary, d2_ctx, d2_attempt)])
             _accrue(u)
@@ -1751,6 +1748,26 @@ def _collect_traceback_context(output: str, run_dir: Path, fallback: str = "") -
             file_contents.append(f"### {rel}\n```python\n{tf.read_text()}\n```")
 
     return "\n\n".join(file_contents) if file_contents else fallback[:2000]
+
+
+def _limits_context() -> str:
+    """Сводка лимитов прогона для промптов правок (агент должен знать границы)."""
+    return (
+        "=== ЛИМИТЫ ПРОГОНА ===\n"
+        f"- Бюджет: мягкий ${SOFT_BUDGET_USD:.2f}, жёсткий ${HARD_BUDGET_USD:.2f}\n"
+        f"- Попыток починки: {MAX_FIX_ATTEMPTS}, после арбитра: {MAX_ARBITER_FIX_ATTEMPTS}\n"
+        f"- Таймаут теста: {TEST_TIMEOUT}с (зависший тест = красный гейт, не краш)\n\n"
+    )
+
+
+def _fix_context(run_dir: Path, output: str, fallback: str = "") -> str:
+    """Контекст для правок: лимиты + статус прогона + файлы из traceback/tests.
+
+    Loop Engineering: агент видит свои границы (лимиты), что уже сделано
+    (STATUS.md) и конкретные файлы — вместо перечитывания всего контекста.
+    """
+    return (_limits_context() + _status_context(run_dir)
+            + _collect_traceback_context(output, run_dir, fallback=fallback))
 
 
 def _run_ci_fix(arch_doc: str, ci_logs: str, run_dir: Path) -> int:

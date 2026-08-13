@@ -12,10 +12,8 @@ from observability import log_event
 
 _UV = shutil.which("uv") or "/home/deploy/.local/bin/uv"
 
-# Пер-тест таймаут pytest (сек). 120с — чтобы медленные, но прогрессирующие
-# тесты (например 600 последовательных записей) не убивались по ошибке;
-# настоящие зависания ловит глобальный таймаут 300с в subprocess.run.
-_TEST_TIMEOUT = os.getenv("AI_TEAM_TEST_TIMEOUT", "120")
+# Пер-тест таймаут pytest — единый источник правды в config.py (LIMITS).
+from config import TEST_TIMEOUT as _TEST_TIMEOUT
 
 
 def _read_ci_recipe(code_dir: Path) -> str:

@@ -98,5 +98,22 @@ MAX_ARBITER_FIX_ATTEMPTS = 2
 # Максимум попыток исправить падающий CI (CI fix loop)
 MAX_CI_FIX_ATTEMPTS = 3
 
+# Таймаут одного теста (pytest --timeout). Зависший тест = красный гейт, а не
+# краш оркестратора (subprocess.TimeoutExpired). Переопределяется окружением.
+TEST_TIMEOUT = int(os.getenv("AI_TEAM_TEST_TIMEOUT", "120"))
+
+# ─── Лимиты прогона — единый источник правды (Loop Engineering) ──
+# Все ограничения в одном месте: бюджет, попытки, таймаут. Агенты должны
+# знать свои границы (сколько попыток осталось, какой таймаут), а не получать
+# молчаливый обрыв. Плоские имена выше — обратная совместимость для импортов.
+LIMITS = {
+    "soft_budget_usd": SOFT_BUDGET_USD,
+    "hard_budget_usd": HARD_BUDGET_USD,
+    "max_fix_attempts": MAX_FIX_ATTEMPTS,
+    "max_arbiter_fix_attempts": MAX_ARBITER_FIX_ATTEMPTS,
+    "max_ci_fix_attempts": MAX_CI_FIX_ATTEMPTS,
+    "test_timeout_seconds": TEST_TIMEOUT,
+}
+
 # Выходная директория для артефактов
 OUTPUT_DIR = "output"
