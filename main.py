@@ -1003,13 +1003,60 @@ def validate_task(task: str) -> str | None:
     return None
 
 
+def _existing_code_summary(run_dir: Path, max_chars: int = 12000) -> str:
+    """Краткое описание существующего кода: дерево файлов + ключевые файлы.
+
+    Для enhance-режима: архитектор и разработчик должны видеть, что уже есть,
+    чтобы проектировать/вносить ДЕЛЬТУ, а не переписывать проект с нуля.
+    """
+    skip_dirs = {".git", ".venv", "__pycache__", ".pytest_cache", "node_modules"}
+    lines = ["=== ДЕРЕВО ФАЙЛОВ ==="]
+    for root, dirs, files in os.walk(run_dir):
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        rel = os.path.relpath(root, run_dir)
+        depth = 0 if rel == "." else rel.count(os.sep) + 1
+        if depth > 2:
+            continue
+        lines.append("  " * depth + (os.path.basename(root) if rel != "." else ".") + "/")
+        for f in sorted(files):
+            lines.append("  " * (depth + 1) + f)
+    key_ext = {".py", ".json", ".yml", ".yaml", ".toml", ".md", ".txt"}
+    for root, dirs, files in os.walk(run_dir):
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        for f in sorted(files):
+            if not any(f.endswith(e) for e in key_ext):
+                continue
+            if "test" in f.lower():
+                continue
+            p = os.path.join(root, f)
+            try:
+                if os.path.getsize(p) > 20000:
+                    continue
+                content = open(p, errors="replace").read()[:1500]
+            except OSError:
+                continue
+            lines.append(f"\n=== {os.path.relpath(p, run_dir)} ===")
+            lines.append(content)
+    return "\n".join(lines)[:max_chars]
+
+
 def main():
-    if len(sys.argv) > 1:
-        task = " ".join(sys.argv[1:])
+    # --enhance <owner>/<repo>: доработка существующего проекта (не greenfield).
+    enhance_repo = None
+    args = sys.argv[1:]
+    if args and args[0] == "--enhance":
+        if len(args) < 2:
+            print("Использование: --enhance <owner>/<repo> '<запрос на доработку>'")
+            sys.exit(1)
+        enhance_repo = args[1]
+        args = args[2:]
+    if args:
+        task = " ".join(args)
     elif not sys.stdin.isatty():
         task = sys.stdin.read().strip()
     else:
         print("Использование: uv run python main.py 'описание задачи...'")
+        print("  или:          uv run python main.py --enhance <owner>/<repo> '<доработка>'")
         sys.exit(1)
 
     error = validate_task(task)
@@ -1031,6 +1078,18 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = Path(OUTPUT_DIR) / timestamp
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Доработка существующего проекта: клонируем репо в run_dir ──
+    if enhance_repo:
+        import subprocess
+        token = os.getenv("GITHUB_TOKEN", "")
+        clone_url = f"https://druner-ai:{token}@github.com/{enhance_repo}.git"
+        r = subprocess.run(["git", "clone", "--depth", "1", clone_url, str(run_dir)],
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            print(f"❌ Не удалось склонировать {enhance_repo}: {r.stderr[:300]}")
+            sys.exit(1)
+        print(f"\n📦 Доработка существующего проекта: {enhance_repo}")
 
     # Колбэк пишет файлы сам — ему нужен каталог до kickoff.
     # Инструменты (run_tests) берут тот же каталог из окружения, не из промпта.
@@ -1093,7 +1152,9 @@ def main():
     # Архитектура вынесена в свой kickoff ради гейта G0: пока все четыре
     # задачи шли одним Crew, проверить спеку до написания тестов было негде —
     # код между задачами одного Crew не выполняется.
-    spec, u = _phase("A1", [architect], [make_spec_task(task)])
+    existing_code = _existing_code_summary(run_dir) if enhance_repo else ""
+    spec, u = _phase("A1", [architect],
+                     [make_spec_task(task, enhance=bool(enhance_repo), existing_code=existing_code)])
     _accrue(u)
 
     # ── Гейт G0: спека говорит проверяемыми утверждениями ──
@@ -1117,7 +1178,8 @@ def main():
 
     # ── Фаза A2: тесты → код → неблокирующее ревю ──
     result_str, u = _phase("A2", [test_designer, developer, qa_gate],
-                           make_impl_tasks(spec))
+                           make_impl_tasks(spec, enhance=bool(enhance_repo),
+                                           existing_code=existing_code))
     _accrue(u)
 
     # ── Гейт G1: единственный источник вердикта ────────────────
@@ -1335,7 +1397,11 @@ def main():
     # ── Создать Pull Request ────────────────────────────────────
     pr_url = None
     if status == "✅ Успешно":
-        pr_url = create_pr_from_run(run_dir, task, timestamp, metrics, deploy_report)
+        if enhance_repo:
+            pr_url = create_enhance_pr(run_dir, enhance_repo, task, timestamp,
+                                       metrics, deploy_report)
+        else:
+            pr_url = create_pr_from_run(run_dir, task, timestamp, metrics, deploy_report)
 
     log_event({
         "event": "run_end",
@@ -1362,6 +1428,33 @@ def main():
         "artifacts": len(saved_files),
         "pr_url": pr_url,
     })
+
+    # ── Publish (CD): развернуть постоянно + выставить наружу ─────
+    # Независимо от зелёного гейта (deploy-anyway): «потыкать почти рабочий
+    # код» — отдельная цель от «код готов». Включается env AI_TEAM_PUBLISH=1,
+    # слаг поддомена/репо — из AI_TEAM_PUBLISH_SLUG (иначе app-<timestamp>).
+    if os.getenv("AI_TEAM_PUBLISH", "").strip().lower() in {"1", "true", "yes", "on"}:
+        from publish import publish_service, add_nginx_vhost, push_repo
+        slug = (os.getenv("AI_TEAM_PUBLISH_SLUG", "") or f"app-{timestamp}").strip()
+        pub_url = repo_url = pub_port = None
+        print(f"\n{'─' * 54}\n🚀 PUBLISH (deploy-anyway): {slug}")
+        try:
+            pub = publish_service(run_dir, slug)
+            print(pub["report"])
+            pub_port = pub["port"]
+            if pub_port:
+                if add_nginx_vhost(slug, pub_port):
+                    pub_url = f"http://{slug}.185.93.105.16.sslip.io"
+                    print(f"🔗 Опубликовано: {pub_url}")
+                else:
+                    print("⚠️ nginx vhost не добавлен (валидация не прошла)")
+                repo_url = push_repo(slug, pub["dest"])
+                if repo_url:
+                    print(f"🐙 Репозиторий: {repo_url}")
+        except Exception as e:
+            print(f"⚠️ Publish упал: {e}")
+        log_event({"event": "publish", "slug": slug, "port": pub_port,
+                   "url": pub_url, "repo": repo_url})
 
     # ── CI fix loop: ждём CI, при падении — доработка ──────────
     if pr_url:
@@ -1781,6 +1874,88 @@ def create_pr_from_run(run_dir: Path, task: str, timestamp: str,
                       capture_output=True, timeout=15)
         # Удаляем локальную ветку (remote остаётся для PR)
         subprocess.run(["git", "branch", "-D", branch], capture_output=True, timeout=10)
+
+
+def create_enhance_pr(run_dir: Path, repo: str, task: str, timestamp: str,
+                      metrics: dict | None = None, deploy_report: str = "") -> str | None:
+    """Создать PR на ЦЕЛЕВОМ репо (enhance-режим): run_dir — это git-клон цели.
+
+    В отличие от create_pr_from_run (worktree в ai-team-corp), здесь run_dir
+    уже является клоном целевого репозитория. Коммитим изменения колбэка,
+    пушим ветку и открываем PR на этот репозиторий.
+    """
+    import subprocess
+    import requests
+
+    token = os.getenv("GITHUB_TOKEN", "")
+    if not token:
+        return None
+    branch = f"ai-team/{timestamp}"
+    title = task[:80] + ("..." if len(task) > 80 else "")
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+
+    def _git(*args):
+        return subprocess.run(["git", *args], cwd=str(run_dir),
+                              capture_output=True, text=True, timeout=30)
+
+    if not (run_dir / ".git").exists():
+        print("⚠️ run_dir не git-клон — PR не создаётся")
+        return None
+
+    try:
+        import shutil
+        # Убираем артефакты пайплайна — в PR идёт только изменение кода.
+        for name in ("REPORT.md", "run.jsonl", "SPEC.md", "tests_output.txt", "tests_full_output.txt"):
+            (run_dir / name).unlink(missing_ok=True)
+        for g in ("task_*.md", "gate_*.txt"):
+            for p in run_dir.glob(g):
+                p.unlink(missing_ok=True)
+        for d in run_dir.glob("stage_*"):
+            if d.is_dir():
+                shutil.rmtree(d, ignore_errors=True)
+
+        # git identity — иначе commit падает с "Please tell me who you are".
+        _git("config", "user.name", "Andrei Tochenyi")
+        _git("config", "user.email", "druner@gmail.com")
+
+        r = _git("checkout", "-b", branch)
+        if r.returncode != 0:
+            _git("checkout", branch)
+        _git("add", "-A")
+        r = _git("commit", "-m", f"🤖 AI-команда: {title}")
+        if "nothing to commit" in (r.stdout + r.stderr):
+            print("⚠️ Нет изменений для PR")
+            return None
+        if r.returncode != 0:
+            print(f"⚠️ Commit failed: {r.stderr[:200]}")
+            return None
+
+        r = _git("push", "-u", "origin", branch)
+        if r.returncode != 0:
+            print(f"⚠️ Push failed: {r.stderr[:200]}")
+            return None
+
+        r = requests.get(f"https://api.github.com/repos/{repo}", headers=headers, timeout=30)
+        base = r.json().get("default_branch", "main") if r.status_code == 200 else "main"
+        body = (
+            "## 🤖 AI-команда — доработка\n\n"
+            f"**Запрос:** {task}\n\n"
+            f"**Время:** {(metrics or {}).get('duration', 0):.1f} сек | "
+            f"**Цена:** ${(metrics or {}).get('cost', 0):.4f} | "
+            f"**Тесты:** {'✅' if deploy_report and '❌' not in deploy_report else ('❌' if deploy_report else '—')}\n"
+        )
+        r = requests.post(f"https://api.github.com/repos/{repo}/pulls", headers=headers,
+                          json={"title": f"🤖 {title}", "head": branch, "base": base,
+                                "body": body}, timeout=30)
+        if r.status_code == 201:
+            url = r.json()["html_url"]
+            print(f"\n🔀 PR создан: {url}")
+            return url
+        print(f"⚠️ PR creation failed: {r.status_code} — {r.text[:200]}")
+        return None
+    except Exception as e:
+        print(f"⚠️ Ошибка создания PR: {e}")
+        return None
 
 
 def _close_stale_prs(task: str) -> None:

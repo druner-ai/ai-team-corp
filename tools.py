@@ -176,7 +176,7 @@ def run_tests(code_directory: str = "") -> str:
         output_lines.append("Installing dependencies (uv pip)...")
         # pytest ставится всегда: без него uv pip install без аргументов падает,
         # а pytest в venv нужен в любом случае
-        install_cmd = [_UV, "pip", "install", "--python", str(python), "-q", "pytest"]
+        install_cmd = [_UV, "pip", "install", "--python", str(python), "-q", "pytest", "pytest-timeout"]
         for rf in req_files:
             install_cmd.extend(["-r", str(rf)])
 
@@ -199,14 +199,20 @@ def run_tests(code_directory: str = "") -> str:
         output_lines.append("\nRunning pytest...")
         # -vv обязателен: при -v pytest режет diff сообщением "106 lines hidden",
         # и агент, чинящий код, не видит расхождения и начинает угадывать.
-        result = subprocess.run(
-            [str(pytest), str(tests_dir), "-vv", "--tb=long"],
-            capture_output=True,
-            text=True,
-            timeout=300,
-            cwd=str(code_dir),
-            env=runtime_env()
-        )
+        try:
+            result = subprocess.run(
+                [str(pytest), str(tests_dir), "-vv", "--tb=long", "--timeout=60"],
+                capture_output=True,
+                text=True,
+                timeout=300,
+                cwd=str(code_dir),
+                env=runtime_env()
+            )
+        except subprocess.TimeoutExpired:
+            output_lines.append("❌ pytest TIMED OUT after 300s — зависший тест (вероятно браузер/сеть).")
+            log_event({"event": "tool_call", "tool": "run_tests", "dir": str(code_dir),
+                       "exit_code": "timeout"})
+            return "\n".join(output_lines)
 
         output_lines.append(f"\nExit code: {result.returncode}")
         output_lines.append("\n=== STDOUT ===")
@@ -252,7 +258,7 @@ def run_tests_quiet(code_directory: str) -> tuple[bool, str]:
         python = venv_path / "bin" / "python"
         pytest = venv_path / "bin" / "pytest"
 
-        install_cmd = [_UV, "pip", "install", "--python", str(python), "-q", "pytest"]
+        install_cmd = [_UV, "pip", "install", "--python", str(python), "-q", "pytest", "pytest-timeout"]
         for rf in req_files:
             install_cmd.extend(["-r", str(rf)])
 
@@ -266,11 +272,20 @@ def run_tests_quiet(code_directory: str) -> tuple[bool, str]:
         # Внешние рантаймы по рецепту CI (браузеры и прочее вне pip)
         runtime_notes = prepare_external_runtimes(code_dir, venv_path / "bin")
 
-        result = subprocess.run(
-            [str(pytest), str(tests_dir), "-vv", "--tb=long"],
-            capture_output=True, text=True, timeout=300, cwd=str(code_dir),
-            env=runtime_env()
-        )
+        try:
+            result = subprocess.run(
+                [str(pytest), str(tests_dir), "-vv", "--tb=long", "--timeout=60"],
+                capture_output=True, text=True, timeout=300, cwd=str(code_dir),
+                env=runtime_env()
+            )
+        except subprocess.TimeoutExpired:
+            msg = ("❌ pytest TIMED OUT after 300s — зависший тест "
+                   "(вероятно браузер/сеть). Гейт красный.")
+            try:
+                (code_dir / "tests_full_output.txt").write_text(msg)
+            except OSError:
+                pass
+            return False, msg
 
         passed = result.returncode == 0
         full = result.stdout + result.stderr
