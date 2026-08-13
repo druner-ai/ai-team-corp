@@ -31,11 +31,12 @@ from crewai.tasks.task_output import TaskOutput
 
 from config import (MODELS, FALLBACK_MODEL, PHASE_MODEL_WEIGHTS, SOFT_BUDGET_USD,
                     HARD_BUDGET_USD, MAX_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS,
-                    OUTPUT_DIR, VERSION)
+                    MAX_ARBITER_FIX_ATTEMPTS, OUTPUT_DIR, VERSION)
 from agents import (architect, test_designer, developer, qa_gate, devops,
                     contract_arbiter, switch_to_fallback)
-from tasks import (make_spec_task, make_spec_fix_task, make_impl_tasks,
-                   make_fix_task, make_phase_c_tasks, make_arbiter_task)
+from tasks import (make_spec_task, make_spec_fix_task, make_baseline_tests_task,
+                   make_impl_tasks, make_fix_task, make_phase_c_tasks,
+                   make_arbiter_task)
 from observability import init_log, log_event
 
 # ─── global state ─────────────────────────────────────────────
@@ -51,6 +52,7 @@ _CHEAP_MODE: bool = False    # режим дешёвых моделей посл
 STAGE_BY_TASK: dict[str, tuple[str, bool]] = {
     "architecture": ("stage_00_arch", False),
     "spec_fix":     ("stage_00_arch_fix", False),
+    "baseline_tests": ("stage_00_baseline", False),
     "test_design":  ("stage_01_tests", False),
     "coding":       ("stage_02_dev", False),
     "review":       ("stage_03_qa", False),
@@ -1040,6 +1042,12 @@ def _existing_code_summary(run_dir: Path, max_chars: int = 12000) -> str:
     return "\n".join(lines)[:max_chars]
 
 
+def _has_tests(run_dir: Path) -> bool:
+    """Есть ли в репо хотя бы один тест (tests/test_*.py)."""
+    tests_dir = run_dir / "tests"
+    return tests_dir.is_dir() and any(tests_dir.glob("test_*.py"))
+
+
 def main():
     # --enhance <owner>/<repo>: доработка существующего проекта (не greenfield).
     enhance_repo = None
@@ -1153,6 +1161,15 @@ def main():
     # задачи шли одним Crew, проверить спеку до написания тестов было негде —
     # код между задачами одного Crew не выполняется.
     existing_code = _existing_code_summary(run_dir) if enhance_repo else ""
+
+    # ── Доработка: если в репо нет тестов — команда пишет базовые ──
+    if enhance_repo and not _has_tests(run_dir) and not _budget_stop("A0"):
+        print("\n📝 В репо нет тестов — Test Designer пишет базовые тесты на текущее поведение")
+        _, u = _phase("A0", [test_designer], [make_baseline_tests_task(existing_code)])
+        _accrue(u)
+        base_ok, base_summary = _gate("G_base", run_dir)
+        print(f"Базовые тесты: {'✅ зелёные' if base_ok else '❌ ' + base_summary[-160:]}")
+
     spec, u = _phase("A1", [architect],
                      [make_spec_task(task, enhance=bool(enhance_repo), existing_code=existing_code)])
     _accrue(u)
@@ -1273,6 +1290,15 @@ def main():
                                                    dispute,
                                                    trace["unanchored"])])
             _accrue(u)
+            # Строгий формат вердикта: если арбитр не дал "ARBITER:" — один раз
+            # напоминаем формат явно и повторяем вызов.
+            if "ARBITER:" not in arb_out:
+                arb_out, u = _phase("D", [contract_arbiter],
+                                    [make_arbiter_task(tests_summary, context,
+                                                       arb_spec, dispute,
+                                                       trace["unanchored"],
+                                                       remind_format=True)])
+                _accrue(u)
             m = re.search(r"ARBITER:.{0,300}", arb_out)
             arbiter_decision = m.group(0).replace("\\n", " ").strip() if m else ""
             # Право менять тест — это и возможность сделать гейт зелёным, убрав
@@ -1308,6 +1334,34 @@ def main():
                                "tests_green": tests_green})
                     print(f"\nРЕШЕНИЕ АРБИТРА: {arbiter_decision or '(без пометки ARBITER:)'}")
                     print(f"  контракт не ослаблен — {why}")
+
+    # ── Фаза D2: доводка после арбитра ────────────────────────────
+    # Арбитр мог отдать правку, которая сама не проходит тесты (пропущенный
+    # import, pydantic v1). Даём разработчику ещё пару попыток починить КОД,
+    # глядя на реальный вывод pytest, не трогая tests/.
+    if not tests_green and not budget_stopped:
+        for d2_attempt in range(1, MAX_ARBITER_FIX_ATTEMPTS + 1):
+            if tests_green:
+                break
+            if _budget_stop(f"D2{d2_attempt}"):
+                budget_stopped = f"D2{d2_attempt}"
+                break
+            d2_before = _score(tests_summary)
+            d2_snap = _code_snapshot(run_dir)
+            d2_ctx = _collect_traceback_context(tests_summary, run_dir,
+                                                fallback=result_str)
+            _, u = _phase(f"D2{d2_attempt}", [developer],
+                          [make_fix_task(tests_summary, d2_ctx, d2_attempt)])
+            _accrue(u)
+            tests_green, new_summary = _gate(f"G2_arbfix{d2_attempt}", run_dir)
+            d2_after = _score(new_summary)
+            if not tests_green and d2_after > d2_before:
+                _code_restore(run_dir, d2_snap)
+                print(f"ДОВОДКА D2-{d2_attempt} ОТКАЧЕНА (стало хуже)")
+                break
+            tests_summary = new_summary
+            if tests_green:
+                print(f"ДОВОДКА D2-{d2_attempt}: тесты зелёные")
 
     # ── Фаза C: упаковка — только на зелёных тестах и в бюджете ───
     if tests_green and not budget_stopped and not _budget_stop("C"):

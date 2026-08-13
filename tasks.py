@@ -112,6 +112,51 @@ def make_spec_fix_task(spec: str, problems: list[str]) -> Task:
     )
 
 
+def make_baseline_tests_task(existing_code: str) -> Task:
+    """Доработка: в репо нет тестов — написать базовые тесты на текущее поведение.
+
+    Пишет ТОЛЬКО тесты (без кода), дата-независимые: контракт API, а не
+    конкретные данные. Это страховка, чтобы enhancement не сломал существующее.
+    """
+    return Task(
+        description=f"""\
+        В проекте ещё НЕТ тестов. Напиши БАЗОВЫЕ тесты, которые покрывают
+        ТЕКУЩЕЕ поведение существующего кода — чтобы будущие доработки имели
+        страховку от регрессий.
+
+        Тесты должны быть ДАТА-НЕЗАВИСИМЫМИ: проверяй контракт API (форму
+        ответа, коды статусов, ключевые поля), а НЕ конкретные данные (не
+        хардкодь число записей, конкретные названия, жанры или id). Каждый
+        эндпоинт покрой хотя бы одним тестом.
+
+        === ТЕКУЩИЙ КОД ПРОЕКТА ===
+        {existing_code}
+        === КОНЕЦ КОДА ===
+
+        ВАЖНО — ФОРМАТ ОТВЕТА:
+        Верни JSON с полем files — массив объектов, каждый с полями path и content.
+        Пример:
+        {{
+          "files": [
+            {{"path": "tests/conftest.py", "content": "import pytest\\n..."}},
+            {{"path": "tests/test_api.py", "content": "def test_...():\\n    ..."}}
+          ]
+        }}
+
+        ПРАВИЛА:
+        - Все тесты в tests/, файлы test_*.py + conftest.py
+        - Для API используй синхронный TestClient или httpx (без async), либо
+          pytest-asyncio с asyncio_mode = auto
+        - НЕ пиши код реализации — только тесты
+        - Тесты должны ПРОХОДИТЬ на текущем коде (код уже рабочий)
+        """,
+        expected_output="JSON с полем files — базовые тесты (conftest.py + test_*.py) на текущее поведение.",
+        agent=test_designer,
+        output_pydantic=CodeOutput,
+        name="baseline_tests",
+    )
+
+
 def make_impl_tasks(spec: str, enhance: bool = False, existing_code: str = "") -> list[Task]:
     """Фаза A2: тесты → код → неблокирующее ревю.
 
@@ -428,6 +473,11 @@ def make_fix_task(pytest_output: str, context: str, attempt: int) -> Task:
           приведи раскладку к тому, КАК ИМПОРТИРУЮТ ТЕСТЫ: перенеси модули либо
           поправь pythonpath в pytest.ini. НЕ создавай вторую копию пакета:
           две ветки одного кода расходятся и ломают остальные тесты.
+        - Импортируй ВСЕ имена, которые используешь в файле (Depends, get_storage,
+          Query и т.п.): пропущенный import = NameError при импорте = падают ВСЕ тесты.
+        - Pydantic v2: @field_validator вместо @validator (v1), ConfigDict вместо
+          class Config. Для ошибки 400 — HTTPException в эндпоинте, а не валидация
+          модели (она всегда даёт 422).
         - Опирайся на фактическое расхождение из вывода выше, а не на догадки
           о том, что могло бы быть не так.
         - В поле content первого файла добавь комментарий: что исправлено и почему.
@@ -444,7 +494,8 @@ def make_fix_task(pytest_output: str, context: str, attempt: int) -> Task:
 
 
 def make_arbiter_task(pytest_output: str, context: str, spec: str,
-                      dispute: str = "", unanchored: list[str] | None = None) -> Task:
+                      dispute: str = "", unanchored: list[str] | None = None,
+                      remind_format: bool = False) -> Task:
     """Фаза D: разбор спора между тестом и кодом.
 
     Вызывается, когда цикл правок исчерпан или разработчик вернул
@@ -453,6 +504,13 @@ def make_arbiter_task(pytest_output: str, context: str, spec: str,
     """
     dispute_block = (f"\n        === ЗАЯВЛЕННЫЙ СПОР ===\n        {dispute}\n"
                      if dispute else "")
+    remind_block = (
+        "\n        !!! ПРОШЛЫЙ РАЗ ТЫ НЕ СОБЛЮЛ ФОРМАТ ОТВЕТА !!!\n"
+        "        Первая строка первого файла ОБЯЗАТЕЛЬНО должна быть строкой-комментарием:\n"
+        "        ARBITER: <прав тест | прав код | спека молчала> — <цитата из спеки или\n"
+        "        формулировка нового требования> — <что именно исправлено>\n"
+        "        Без этой строки твой ответ отбрасывается целиком, правка откатывается.\n"
+        if remind_format else "")
     # Тест без ссылки на ASSERT-NN не опирается ни на одно требование
     # спеки, поэтому в споре с кодом у него нет оснований победить.
     unanchored_block = (
@@ -465,7 +523,7 @@ def make_arbiter_task(pytest_output: str, context: str, spec: str,
     return Task(
         description=f"""
         Цикл правок исчерпан, тесты всё ещё красные. Ты решаешь, кто прав.
-{dispute_block}{unanchored_block}
+{dispute_block}{remind_block}{unanchored_block}
         === СПЕКА (архитектурный документ) ===
         {spec[:8000]}
 
@@ -494,6 +552,14 @@ def make_arbiter_task(pytest_output: str, context: str, spec: str,
         - сокращать число assert более чем на 10%;
         - ставить @pytest.mark.skip или xfail;
         - ослаблять проверку до тавтологии вроде assert True или assert x == x.
+
+        ТЕХНИЧЕСКИЕ ТРЕБОВАНИЯ К КОДУ (иначе тесты упадут повторно):
+        - Импортируй ВСЕ имена, которые используешь в файле (Depends, get_storage,
+          Query и т.п.). Пропущенный import = NameError при импорте = падают ВСЕ тесты.
+        - Pydantic v2: используй @field_validator (не @validator из v1) и
+          ConfigDict вместо class Config. @validator даёт DeprecationWarning.
+        - Если тест ждёт HTTP 400 — бросай HTTPException в эндпоинте. Валидация
+          тела запроса в Pydantic ВСЕГДА возвращает 422, а не 400.
 
         ФОРМАТ ОТВЕТА:
         Верни JSON с полем files — массив объектов {{"path": "...", "content": "..."}}.
