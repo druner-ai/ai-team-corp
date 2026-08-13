@@ -5,6 +5,7 @@ output/ (история прогонов), пишет оверрайды в team
 """
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -105,6 +106,26 @@ def list_models():
 @app.get("/api/models/catalog")
 def model_catalog():
     return [{"id": mid, "label": label} for mid, label in MODEL_CATALOG]
+
+
+@app.get("/api/models/catalog/live")
+def model_catalog_live():
+    """Живой список моделей из OpenRouter API (через SOCKS5-прокси из env)."""
+    import httpx
+    key = os.getenv("OPENROUTER_API_KEY")
+    if not key:
+        raise HTTPException(503, "OPENROUTER_API_KEY не задан")
+    try:
+        r = httpx.get("https://openrouter.ai/api/v1/models",
+                      headers={"Authorization": f"Bearer {key}"}, timeout=20)
+        r.raise_for_status()
+    except Exception as e:
+        raise HTTPException(502, f"OpenRouter недоступен: {e}")
+    return [
+        {"id": m["id"], "label": m.get("name") or m["id"]}
+        for m in r.json().get("data", [])
+        if m.get("id")
+    ]
 
 
 @app.put("/api/models/{role}")

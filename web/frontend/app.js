@@ -58,13 +58,17 @@ async function loadDashboard() {
 
 // ── Модели ────────────────────────────────────────────────────
 async function loadModels() {
-  const [models, catalog] = await Promise.all([api('/models'), api('/models/catalog')]);
+  const models = await api('/models');
+  let catalog = [];
+  try { catalog = await api('/models/catalog/live'); }
+  catch (e) { catalog = await api('/models/catalog'); }
+  catalog.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   $('#models').innerHTML = `
     <table><tr><th>Роль</th><th>Модель</th><th>temp</th><th>timeout</th><th></th></tr>
     ${models.map(m => {
       const currentInCatalog = catalog.some(c => c.id === m.name);
       const opts = (currentInCatalog ? '' : `<option value="${esc(m.name)}" selected>${esc(m.name)} (текущая)</option>`)
-        + catalog.map(c => `<option value="${esc(c.id)}" ${c.id === m.name ? 'selected' : ''}>${esc(c.label)}</option>`).join('');
+        + catalog.map(c => `<option value="${esc(c.id)}" ${c.id === m.name ? 'selected' : ''}>${esc(c.id)}</option>`).join('');
       return `
       <tr>
         <td>${esc(m.label)}</td>
