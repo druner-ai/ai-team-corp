@@ -185,19 +185,57 @@ def _phase(name: str, agents: list, tasks: list) -> tuple[str, dict]:
                "duration": round(time.time() - t0, 1), "error": error, **u})
     print(f"ФАЗА {name}: ${u['cost']:.4f} "
           f"({u['tokens_in']}/{u['tokens_out']} токенов, {u['cost_method']})")
+    _status_append(_RUN_DIR, f"## Фаза {name}: ${u['cost']:.4f} "
+                             f"({u['tokens_in']}/{u['tokens_out']} токенов)"
+                             + (f" — ОШИБКА: {error}" if error else ""))
     return str(result or error or ""), u
+
+
+# ─── STATUS.md — живой статус прогона (Ralph loop) ─────────────
+# Короткие итерации держат на диске актуальный «план/статус», который
+# следующие фазы читают вместо перечитывания всего накопленного контекста.
+# fix/арбитр/D2 получают только хвост STATUS.md — сжатую сводку «что уже было».
+
+
+def _status_append(run_dir: Path | None, text: str) -> None:
+    """Дописать строку в живой STATUS.md прогона. Идемпотентно и безопасно."""
+    if run_dir is None:
+        return
+    try:
+        with (run_dir / "STATUS.md").open("a", encoding="utf-8") as f:
+            f.write(text.rstrip() + "\n")
+    except OSError:
+        pass
+
+
+def _status_context(run_dir: Path) -> str:
+    """Хвост STATUS.md для инъекции в промпты правок (fix/арбитр/D2).
+
+    Возвращает пустую строку, если статуса нет — тогда контекст не меняется.
+    """
+    sp = run_dir / "STATUS.md"
+    if not sp.is_file():
+        return ""
+    text = sp.read_text(encoding="utf-8", errors="ignore").strip()
+    if not text:
+        return ""
+    # Только хвост: полный журнал раздул бы промпт без пользы для решения.
+    return "=== СТАТУС ПРОГОНА (что уже было сделано) ===\n" + text[-3000:] + "\n\n"
 
 
 def _gate(name: str, run_dir: Path) -> tuple[bool, str]:
     """Детерминированный гейт: pytest. Единственный источник вердикта."""
     from tools import run_tests_quiet
     green, summary = run_tests_quiet(str(run_dir))
+    counts = _parse_pytest_counts(summary)
     # Ключ вердикта — green, не passed: у pytest есть своё passed (число тестов),
     # и одинаковые имена молча затирают вердикт в журнале.
-    log_event({"event": "gate", "gate": name, "green": green,
-               **_parse_pytest_counts(summary)})
+    log_event({"event": "gate", "gate": name, "green": green, **counts})
     (run_dir / f"gate_{name}.txt").write_text(summary)
     verdict = "ЗЕЛЁНЫЙ" if green else "КРАСНЫЙ"
+    _status_append(run_dir, f"## Гейт {name}: {verdict} — "
+                            f"{counts['passed']} passed / {counts['failed']} failed / "
+                            f"{counts['errors']} errors")
     print(f"\nГЕЙТ {name}: {verdict}")
     return green, summary
 
@@ -1106,6 +1144,9 @@ def main():
     _RUN_DIR = run_dir
     os.environ["AI_TEAM_RUN_DIR"] = str(run_dir.resolve())
     init_log(run_dir)
+    _status_append(run_dir, f"# STATUS прогона {timestamp}")
+    _status_append(run_dir, f"Задача: {task[:300]}")
+    _status_append(run_dir, f"Режим: {'enhance ' + enhance_repo if enhance_repo else 'greenfield'}")
     prices_source = _refresh_prices()
     log_event({
         "event": "run_start",
@@ -1226,7 +1267,8 @@ def main():
         # несуществующую зависимость и увела 35/11 в 18/14/14.
         before_score = _score(tests_summary)
         snap = _code_snapshot(run_dir)
-        context = _collect_traceback_context(tests_summary, run_dir, fallback=result_str)
+        context = _status_context(run_dir) + _collect_traceback_context(
+            tests_summary, run_dir, fallback=result_str)
         counts = _parse_pytest_counts(tests_summary)
         if counts["errors"] > 0:
             # Ошибки сбора (NameError/ImportError) — набор не собирается: чинит
@@ -1292,8 +1334,8 @@ def main():
             tests_before = _tests_snapshot(run_dir)
             code_snap = _code_snapshot(run_dir)
             before_score = _score(tests_summary)
-            context = _collect_traceback_context(tests_summary, run_dir,
-                                                 fallback=result_str)
+            context = _status_context(run_dir) + _collect_traceback_context(
+                tests_summary, run_dir, fallback=result_str)
             arb_out, u = _phase("D", [contract_arbiter],
                                 [make_arbiter_task(tests_summary, context, arb_spec,
                                                    dispute,
@@ -1357,8 +1399,8 @@ def main():
                 break
             d2_before = _score(tests_summary)
             d2_snap = _code_snapshot(run_dir)
-            d2_ctx = _collect_traceback_context(tests_summary, run_dir,
-                                                fallback=result_str)
+            d2_ctx = _status_context(run_dir) + _collect_traceback_context(
+                tests_summary, run_dir, fallback=result_str)
             _, u = _phase(f"D2{d2_attempt}", [developer],
                           [make_fix_task(tests_summary, d2_ctx, d2_attempt)])
             _accrue(u)
