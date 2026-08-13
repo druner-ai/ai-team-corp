@@ -32,11 +32,11 @@ from crewai.tasks.task_output import TaskOutput
 from config import (MODELS, FALLBACK_MODEL, PHASE_MODEL_WEIGHTS, SOFT_BUDGET_USD,
                     HARD_BUDGET_USD, MAX_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS,
                     MAX_ARBITER_FIX_ATTEMPTS, TEST_TIMEOUT, OUTPUT_DIR, VERSION)
-from agents import (architect, test_designer, developer, qa_gate, devops,
-                    contract_arbiter, switch_to_fallback)
+from agents import (architect, ux_designer, test_designer, developer, qa_gate,
+                    devops, contract_arbiter, switch_to_fallback)
 from tasks import (make_spec_task, make_spec_fix_task, make_baseline_tests_task,
-                   make_impl_tasks, make_fix_task, make_test_fix_task,
-                   make_phase_c_tasks, make_arbiter_task)
+                   make_design_task, make_impl_tasks, make_fix_task,
+                   make_test_fix_task, make_phase_c_tasks, make_arbiter_task)
 from observability import init_log, log_event
 
 # ─── global state ─────────────────────────────────────────────
@@ -53,6 +53,7 @@ STAGE_BY_TASK: dict[str, tuple[str, bool]] = {
     "architecture": ("stage_00_arch", False),
     "spec_fix":     ("stage_00_arch_fix", False),
     "baseline_tests": ("stage_00_baseline", False),
+    "design":       ("stage_01_design", False),
     "test_design":  ("stage_01_tests", False),
     "coding":       ("stage_02_dev", False),
     "review":       ("stage_03_qa", False),
@@ -627,6 +628,7 @@ WRITE_RULES: dict[str, dict[str, tuple[str, ...]]] = {
                                 ".dockerignore", ".github/", ".env.example", "README.md"),
                       "deny": ()},
     "архитектор":   {"allow": ("docs/", "SPEC.md", "ARCHITECTURE.md", "README.md"), "deny": ()},
+    "дизайнер":     {"allow": ("static/", "design.md"), "deny": ("tests/", "backend/")},
     "qa":            {"allow": (), "deny": ("*",)},   # QA не пишет файлы вовсе
 }
 
@@ -1222,8 +1224,9 @@ def main():
             return True
         if spent > SOFT_BUDGET_USD and not _CHEAP_MODE:
             _CHEAP_MODE = True
-            roles = switch_to_fallback([architect, test_designer, developer,
-                                        qa_gate, devops, contract_arbiter])
+            roles = switch_to_fallback([architect, ux_designer, test_designer,
+                                        developer, qa_gate, devops,
+                                        contract_arbiter])
             log_event({"event": "budget", "level": "soft", "spent": round(spent, 4),
                        "limit": SOFT_BUDGET_USD, "next_phase": next_phase,
                        "fallback_model": FALLBACK_MODEL, "roles": roles})
@@ -1270,10 +1273,22 @@ def main():
         log_event({"event": "gate", "gate": "G0_retry", "green": spec_ok,
                    "accepted": spec_fixed, "problems": spec_problems})
 
+    # ── Фаза A1d: UX/UI дизайнер проектирует интерфейс по спеке ──
+    design_md = ""
+    if not _budget_stop("A1d"):
+        _, u = _phase("A1d", [ux_designer],
+                      [make_design_task(spec, enhance=bool(enhance_repo),
+                                        existing_code=existing_code)])
+        _accrue(u)
+        dfile = run_dir / "design.md"
+        if dfile.is_file():
+            design_md = dfile.read_text(encoding="utf-8", errors="ignore")[:8000]
+
     # ── Фаза A2: тесты → код → неблокирующее ревю ──
     result_str, u = _phase("A2", [test_designer, developer, qa_gate],
                            make_impl_tasks(spec, enhance=bool(enhance_repo),
-                                           existing_code=existing_code))
+                                           existing_code=existing_code,
+                                           design=design_md))
     _accrue(u)
 
     # ── Гейт G1: единственный источник вердикта ────────────────

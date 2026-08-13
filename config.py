@@ -45,6 +45,14 @@ MODELS = {
         "timeout": 60,
         "price_per_1m": (1.168, 2.336),
     },
+    # UX/UI дизайнер проектирует интерфейс (design.md + styles.css + index.html).
+    # Kimi силён в HTML/CSS/вёрстке; цена сверена с OpenRouter 2026-08-13.
+    "ux_designer": {
+        "name": "moonshotai/kimi-k2.7-code",
+        "temperature": 0.6,
+        "timeout": 120,
+        "price_per_1m": (0.67, 3.4),
+    },
     # Дешёвая модель для всех ролей после превышения soft-порога бюджета.
     "fallback": {
         "name": "deepseek/deepseek-v4-flash",
@@ -68,6 +76,7 @@ PHASE_MODEL_WEIGHTS = {
     # отдельного ключа test_designer в MODELS нет.
     "A1": {"architect": 1.0},
     "A1F": {"architect": 1.0},
+    "A1D": {"ux_designer": 1.0},
     "A2": {"developer": 2 / 3, "qa": 1 / 3},
     "B": {"developer": 1.0},
     "C": {"devops": 1.0},

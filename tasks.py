@@ -4,8 +4,8 @@ v3.0 — TDD: Test Designer пишет тесты ДО кода, Разрабо�
 """
 
 from crewai import Task
-from agents import (architect, test_designer, developer, qa_gate, devops,
-                    contract_arbiter)
+from agents import (architect, ux_designer, test_designer, developer, qa_gate,
+                    devops, contract_arbiter)
 from output_models import CodeOutput
 from patterns import load_patterns
 
@@ -94,6 +94,56 @@ def make_spec_task(task_description: str, enhance: bool = False, existing_code: 
     )
 
 
+def make_design_task(spec: str, enhance: bool = False, existing_code: str = "") -> Task:
+    """Фаза A1d: UX/UI дизайнер проектирует интерфейс по спеке.
+
+    Между архитектурой (A1) и тестами/кодом (A2): дизайнер выдаёт дизайн-систему
+    (styles.css) и мокап структуры (index.html), чтобы Разработчик собирал фронт
+    по готовому визуалу, а не рисовал его «на глаз» (как в прогонах до этого).
+    """
+    enhance_note = (
+        "ВАЖНО — ДОРАБОТКА СУЩЕСТВУЮЩЕГО ПРОЕКТА:\n"
+        "Ниже — текущий фронт. Проектируй ТОЛЬКО дельту (что добавить/поменять "
+        "в UI под запрос), не переписывай весь дизайн с нуля.\n"
+        f"=== ТЕКУЩИЙ КОД (фронт) ===\n{existing_code}\n=== КОНЕЦ КОДА ===\n\n"
+    ) if enhance else ""
+    return Task(
+        description=f"""
+        Ты получил архитектурный документ (спеку). Спроектируй ИНТЕРФЕЙС.
+
+        {enhance_note}=== СПЕКА ===
+        {spec[:12000]}
+        === КОНЕЦ СПЕКИ ===
+
+        Сначала определи, есть ли у системы фронтенд:
+        - если это ЧИСТЫЙ API без UI — верни один файл design.md со строкой
+          «UI не требуется», и НЕ создавай static/.
+
+        ЕСЛИ ФРОНТЕНД ЕСТЬ — верни JSON files с тремя файлами:
+        1. design.md — структура UI: страницы, блоки, компоненты, дизайн-токены
+           (палитра, шрифты, отступы, радиусы), взаимодействия и состояния
+           (hover/active/loading/empty/error).
+        2. static/css/styles.css — готовая дизайн-система: CSS-переменные (:root),
+           базовые стили, стили компонентов. Без внешних CDN.
+        3. static/index.html — мокап структуры: разметка блоков и контролов
+           с id/классами (например id="quality-selector"), БЕЗ JS-логики —
+           скрипты навесит Разработчик.
+
+        ПРАВИЛА:
+        - Только статика (design.md + static/**). НЕ трогай backend/ и tests/.
+        - Вёрстка без внешних зависимостей (никаких CDN/фреймворков).
+        - Каждый интерактивный контрол помечай id или классом, чтобы Test Designer
+          написал на него тест, а Разработчик — навесил логику, не меняя разметку.
+        - Соблюдай дизайн-токены из спеки, если заданы; иначе предложи свои.
+        - Не пиши JS-логику и не делай запросы к API — это работа Разработчика.
+        """,
+        expected_output="JSON files: design.md (+ static/css/styles.css и static/index.html, если есть UI).",
+        agent=ux_designer,
+        output_pydantic=CodeOutput,
+        name="design",
+    )
+
+
 def make_spec_fix_task(spec: str, problems: list[str]) -> Task:
     """Фаза A1f: довести спеку до проверяемого вида по вердикту гейта G0."""
     return Task(
@@ -165,7 +215,8 @@ def make_baseline_tests_task(existing_code: str) -> Task:
     )
 
 
-def make_impl_tasks(spec: str, enhance: bool = False, existing_code: str = "") -> list[Task]:
+def make_impl_tasks(spec: str, enhance: bool = False, existing_code: str = "",
+                    design: str = "") -> list[Task]:
     """Фаза A2: тесты → код → неблокирующее ревю.
 
     Спека передаётся текстом: после выноса архитектуры в отдельный kickoff
@@ -194,6 +245,11 @@ def make_impl_tasks(spec: str, enhance: bool = False, existing_code: str = "") -
         "только то, что нужно новой фиче, остальное оставляй как есть.\n\n"
         f"=== ТЕКУЩИЙ КОД ПРОЕКТА ===\n{existing_code}\n=== КОНЕЦ КОДА ===\n\n"
     ) if enhance else ""
+    design_block = (
+        f"\n        === ДИЗАЙН UI (от UX/UI дизайнера) ===\n        {design}\n"
+        f"        === КОНЕЦ ДИЗАЙНА ===\n"
+        if design else ""
+    )
 
     # TDD Этап 1: Test Designer пишет тесты ПО АРХИТЕКТУРЕ, не видя кода
     test_design_task = Task(
@@ -205,7 +261,7 @@ def make_impl_tasks(spec: str, enhance: bool = False, existing_code: str = "") -
         {enhance_td_note}=== АРХИТЕКТУРНЫЙ ДОКУМЕНТ (СПЕКА) ===
         {spec[:14000]}
         === КОНЕЦ СПЕКИ ===
-
+        {design_block}
         ВАЖНО — ФОРМАТ ОТВЕТА:
         Ты должен вернуть JSON с полем files — массив объектов, каждый с полями path и content.
         Пример:
@@ -331,6 +387,7 @@ def make_impl_tasks(spec: str, enhance: bool = False, existing_code: str = "") -
         === АРХИТЕКТУРНЫЙ ДОКУМЕНТ (СПЕКА) ===
         {spec[:14000]}
         === КОНЕЦ СПЕКИ ===
+        {design_block}
 
         ВАЖНО — ФОРМАТ ОТВЕТА:
         Ты должен вернуть JSON с полем files — массив объектов, каждый с полями path и content.

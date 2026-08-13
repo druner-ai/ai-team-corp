@@ -37,6 +37,24 @@ architect = Agent(
     allow_delegation=False,
 )
 
+# UX/UI дизайнер: проектирует интерфейс между архитектурой и кодом.
+ux_designer = Agent(
+    role="UX/UI дизайнер",
+    goal="Спроектировать интерфейс по архитектурному документу: структуру страниц, "
+         "компоненты, дизайн-токены (цвета, шрифты, отступы) и взаимодействия. "
+         "Выдать готовую дизайн-систему (styles.css) и мокап структуры (index.html), "
+         "по которому Разработчик соберёт фронт без переделки визуала.",
+    backstory="Ты Senior UX/UI дизайнер. Делаешь понятные и аккуратные интерфейсы: "
+              "визуальная иерархия, контраст, отступы, состояния элементов "
+              "(hover/active/loading/empty/error). Ты не пишешь бизнес-логику и "
+              "не трогаешь backend — только статику: styles.css (дизайн-система) "
+              "и index.html (структура с id/классами). Разработчик наполнит мокап "
+              "живой логикой, сохранив твой визуал и разметку.",
+    llm=_make_llm("ux_designer"),
+    verbose=True,
+    allow_delegation=False,
+)
+
 # TDD: Test Designer пишет тесты ДО кода, независимо от реализации
 test_designer = Agent(
     role="Test Designer",
@@ -129,6 +147,7 @@ contract_arbiter = Agent(
 # Словарь для удобного доступа
 AGENTS = {
     "architect": architect,
+    "ux_designer": ux_designer,
     "test_designer": test_designer,
     "developer": developer,
     "qa": qa_gate,
