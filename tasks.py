@@ -254,6 +254,22 @@ def make_impl_tasks(spec: str, enhance: bool = False, existing_code: str = "") -
           Иначе фикстура client останется raw async_generator и тесты упадут
           с 'async_generator' object has no attribute 'get'.
 
+        КРИТИЧНО — ДЛЯ HTTP API ПИШИ СИНХРОННЫЕ ТЕСТЫ:
+        Проект на FastAPI/Starlette с синхронным TestClient — самый частый
+        случай. Пиши СИНХРОННЫЕ тесты: НИКАКИХ @pytest.mark.asyncio,
+        async def, await. Вызывай client.get(...) без await. async-тесты —
+        ТОЛЬКО если эндпоинты приложения реально async (async def endpoint),
+        и тогда httpx.AsyncClient + ASGITransport + pytest-asyncio. Синхронный
+        TestClient с await client.get() даёт TypeError — тест не соберётся.
+
+        КРИТИЧНО — MONKEYPATCH МЕСТА ИСПОЛЬЗОВАНИЯ:
+        Если подменяешь функцию, которую приложение импортировало как
+        `from backend.data_loader import load_stations` — патчи атрибут в модуле
+        ИСПОЛЬЗОВАНИЯ: monkeypatch.setattr("backend.main.load_stations", ...),
+        а НЕ "backend.data_loader.load_stations" (там main.py держит старую
+        ссылку, подмена не сработает). Переопределение должно возвращать тот же
+        тип, что и настоящая функция (list[Station], а не list[dict]).
+
         ОБЯЗАТЕЛЬНО — СВЯЗЬ СО СПЕКОЙ:
         Первая строка docstring каждого теста начинается ссылкой на
         утверждение из раздела 8 спеки: "ASSERT-07: <о чём тест>".
@@ -620,10 +636,17 @@ def make_arbiter_task(pytest_output: str, context: str, spec: str,
 
         ФОРМАТ ОТВЕТА:
         Верни JSON с полем files — массив объектов {{"path": "...", "content": "..."}}.
-        Только изменённые файлы. В первом файле первой строкой-комментарием
-        запиши решение строго в формате:
+        Только изменённые файлы. Строку-комментарий с решением запиши ПЕРВОЙ
+        СТРОКОЙ ПЕРВОГО ФАЙЛА-КОДА (.py) в формате:
         ARBITER: <прав тест | прав код | спека молчала> — <цитата из спеки или
         формулировка нового требования> — <что именно исправлено>
+
+        КРИТИЧНО — НЕ ЛОМАЙ ФАЙЛЫ ДАННЫХ:
+        Строку ARBITER: и любой прозаический комментарий пиши ТОЛЬКО в .py-файл
+        (через #). НИКОГДА не пиши ARBITER:/текст в .json/.yaml/.toml или другие
+        файлы данных — они обязаны оставаться валидными данными без посторонних
+        строк (иначе приложение упадёт с ошибкой разбора, как уже было со
+        stations.json). Если меняешь stations.json — только валидный JSON.
         """,
         expected_output="JSON с полем files: правка одной стороны спора и решение ARBITER:.",
         agent=contract_arbiter,
