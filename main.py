@@ -35,8 +35,8 @@ from config import (MODELS, FALLBACK_MODEL, PHASE_MODEL_WEIGHTS, SOFT_BUDGET_USD
 from agents import (architect, test_designer, developer, qa_gate, devops,
                     contract_arbiter, switch_to_fallback)
 from tasks import (make_spec_task, make_spec_fix_task, make_baseline_tests_task,
-                   make_impl_tasks, make_fix_task, make_phase_c_tasks,
-                   make_arbiter_task)
+                   make_impl_tasks, make_fix_task, make_test_fix_task,
+                   make_phase_c_tasks, make_arbiter_task)
 from observability import init_log, log_event
 
 # ─── global state ─────────────────────────────────────────────
@@ -57,6 +57,7 @@ STAGE_BY_TASK: dict[str, tuple[str, bool]] = {
     "coding":       ("stage_02_dev", False),
     "review":       ("stage_03_qa", False),
     "fix":          ("stage_04_fix", True),
+    "test_fix":     ("stage_04_testfix", False),
     "devops":       ("stage_05_devops", False),
     # Арбитр — единственная роль с правом менять tests/**, поэтому
     # protect_tests=False. Ограничение здесь не запрет, а проверка
@@ -1226,8 +1227,16 @@ def main():
         before_score = _score(tests_summary)
         snap = _code_snapshot(run_dir)
         context = _collect_traceback_context(tests_summary, run_dir, fallback=result_str)
-        _, u = _phase(f"B{attempt}", [developer],
-                      [make_fix_task(tests_summary, context, attempt)])
+        counts = _parse_pytest_counts(tests_summary)
+        if counts["errors"] > 0:
+            # Ошибки сбора (NameError/ImportError) — набор не собирается: чинит
+            # Test Designer (у него есть право править tests/), а не разработчик
+            # (у которого тесты под замком protect_tests=True).
+            _, u = _phase(f"B{attempt}", [test_designer],
+                          [make_test_fix_task(tests_summary, context, attempt)])
+        else:
+            _, u = _phase(f"B{attempt}", [developer],
+                          [make_fix_task(tests_summary, context, attempt)])
         _accrue(u)
         tests_green, new_summary = _gate(f"G2_{attempt}", run_dir)
         after_score = _score(new_summary)

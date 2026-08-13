@@ -493,6 +493,47 @@ def make_fix_task(pytest_output: str, context: str, attempt: int) -> Task:
     )
 
 
+def make_test_fix_task(pytest_output: str, context: str, attempt: int) -> Task:
+    """Фаза B (ошибки сбора): тесты не собираются — чинит Test Designer.
+
+    Ошибки сбора (NameError/ImportError) не лечатся разработчиком: для fix-роли
+    тесты закрыты на запись (protect_tests=True). Если набор не собирается,
+    виноват либо сам тест (пропущенный import, опечатка), либо код, который тест
+    импортирует. Test Designer имеет право править и то, и другое.
+    """
+    return Task(
+        description=f"""
+        Тесты ПАДАЮТ НА СБОРЕ (collection error), а не на проверках. Ниже —
+        РЕАЛЬНЫЙ вывод pytest.
+
+        === ВЫВОД PYTEST (попытка {attempt}) ===
+        ```
+        {pytest_output[-6000:]}
+        ```
+
+        === ФАЙЛЫ ИЗ TRACEBACK И ВЕСЬ tests/ ===
+        {context}
+
+        ВАЖНО — ФОРМАТ ОТВЕТА:
+        Верни JSON с полем files — массив объектов {{"path": "...", "content": "..."}}.
+        Возвращай ТОЛЬКО изменённые файлы.
+
+        ПРАВИЛА:
+        - Найди, ГДЕ ошибка: в файле tests/ (пропущенный import, опечатка) или
+          в коде приложения, который тест импортирует. Почини именно источник.
+        - Если ошибка в тесте — почини тест. НЕ удаляй тест-функции и НЕ
+          ослабляй проверки (assert) — только устрани причину сбора.
+        - Если ошибка в коде (тест импортирует несуществующее имя) — почини код.
+        - Импортируй ВСЕ имена, которые используешь (httpx, Depends, Query и т.п.).
+        - Pydantic v2: @field_validator вместо @validator (v1).
+        """,
+        expected_output="JSON с полем files: починка сборки тестов (тест или код).",
+        agent=test_designer,
+        output_pydantic=CodeOutput,
+        name="test_fix",
+    )
+
+
 def make_arbiter_task(pytest_output: str, context: str, spec: str,
                       dispute: str = "", unanchored: list[str] | None = None,
                       remind_format: bool = False) -> Task:
