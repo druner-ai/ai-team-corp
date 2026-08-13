@@ -16,6 +16,18 @@ _UV = shutil.which("uv") or "/home/deploy/.local/bin/uv"
 from config import TEST_TIMEOUT as _TEST_TIMEOUT
 
 
+def _pytest_args(pytest: Path, tests_dir: Path) -> list[str]:
+    """Аргументы запуска pytest.
+
+    f-string ОБЯЗАТЕЛЕН: без префикса f строка ``"--timeout={_TEST_TIMEOUT}"``
+    уходит в pytest буквально, тот падает с ``invalid float value: '{_TEST_TIMEOUT}'``
+    и каждый гейт даёт «0 collected» — фикс-цикл и арбитр гоняются вхолостую.
+    Юнит-тесты этот класс не ловят (они мокают run_tests_quiet), поэтому команда
+    вынесена в отдельную функцию и проверяется напрямую.
+    """
+    return [str(pytest), str(tests_dir), "-vv", "--tb=long", f"--timeout={_TEST_TIMEOUT}"]
+
+
 def _read_ci_recipe(code_dir: Path) -> str:
     """Собрать текст всех CI-воркфлоу проекта.
 
@@ -204,7 +216,7 @@ def run_tests(code_directory: str = "") -> str:
         # и агент, чинящий код, не видит расхождения и начинает угадывать.
         try:
             result = subprocess.run(
-                [str(pytest), str(tests_dir), "-vv", "--tb=long", "--timeout={_TEST_TIMEOUT}"],
+                _pytest_args(pytest, tests_dir),
                 capture_output=True,
                 text=True,
                 timeout=300,
@@ -277,7 +289,7 @@ def run_tests_quiet(code_directory: str) -> tuple[bool, str]:
 
         try:
             result = subprocess.run(
-                [str(pytest), str(tests_dir), "-vv", "--tb=long", "--timeout={_TEST_TIMEOUT}"],
+                _pytest_args(pytest, tests_dir),
                 capture_output=True, text=True, timeout=300, cwd=str(code_dir),
                 env=runtime_env()
             )

@@ -41,3 +41,20 @@ def test_fix_context_склеивает_лимиты_статус_и_файлы(
     assert "ЛИМИТЫ ПРОГОНА" in ctx
     assert "СТАТУС ПРОГОНА" in ctx
     assert "test_x.py" in ctx
+
+
+def test_pytest_args_таймаут_интерполирован():
+    """Регресс: --timeout должен получить ЗНАЧЕНИЕ, а не литерал {_TEST_TIMEOUT}.
+
+    Прогон 20260813_201740 сломался на 0 collected по всем гейтам: в tools.py
+    была обычная строка вместо f-string, pytest падал 'invalid float value'.
+    Юнит-тесты это не ловили (мокают run_tests_quiet) — проверяем команду напрямую.
+    """
+    import tools
+    args = tools._pytest_args(Path("/x/pytest"), Path("/x/tests"))
+    assert args[0] == "/x/pytest"
+    assert args[1] == "/x/tests"
+    assert args[2] == "-vv"
+    assert args[4].startswith("--timeout=")
+    assert "{_TEST_TIMEOUT}" not in args[4]
+    assert args[4] == f"--timeout={tools._TEST_TIMEOUT}"
