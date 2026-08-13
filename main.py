@@ -550,6 +550,16 @@ def gate_g1a_traceability(run_dir: Path, spec: str, label: str = "G1a") -> dict:
     return result
 
 
+def _safe_filename(name: str) -> str:
+    """Безопасное имя файла: убирает путь-небезопасные символы ('/', пробелы и пр.).
+
+    Роль может называться «UX/UI дизайнер» — без очистки слэш трактуется как
+    вложенный каталог, и запись журнала падает FileNotFoundError (прогон
+    20260813_211554: вывод дизайнера был потерян).
+    """
+    return re.sub(r"[^\w-]+", "_", name)
+
+
 def on_task_complete(output: TaskOutput):
     """Callback — сохранить вывод и СРАЗУ материализовать файлы на диск.
 
@@ -582,7 +592,11 @@ def on_task_complete(output: TaskOutput):
         stage_name = f"{stage_name}_{_FIX_ATTEMPT}"
 
     # 1. Сырой вывод роли — всегда
-    task_file = _RUN_DIR / f"task_{idx:02d}_{agent_role.replace(' ', '_')}.md"
+    # Роль может содержать '/' (напр. "UX/UI дизайнер") — чистим путь-небезопасные
+    # символы, иначе "task_01_UX/UI_дизайнер.md" трактуется как вложенный путь и
+    # запись падает FileNotFoundError (прогон 20260813_211554: вывод дизайнера потерян).
+    safe_role = _safe_filename(agent_role)
+    task_file = _RUN_DIR / f"task_{idx:02d}_{safe_role}.md"
     task_file.write_text(
         f"# {agent_role}\n\n## Задача\n{task_name}\n\n## Результат\n\n{raw_output}"
     )

@@ -55,3 +55,11 @@ def test_make_impl_tasks_без_дизайна_чист():
     from tasks import make_impl_tasks
     tasks = make_impl_tasks("спека")
     assert all("ДИЗАЙН UI" not in t.description for t in tasks)
+
+
+def test_safe_filename_чистит_слэш_и_пробелы():
+    """Регресс: роль с '/' («UX/UI дизайнер») не должна ломать путь журнала."""
+    assert main._safe_filename("UX/UI дизайнер") == "UX_UI_дизайнер"
+    assert "/" not in main._safe_filename("UX/UI дизайнер")
+    assert main._safe_filename("Test Designer") == "Test_Designer"
+    assert main._safe_filename("Разработчик") == "Разработчик"  # кириллица сохраняется
