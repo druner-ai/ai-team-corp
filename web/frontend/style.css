@@ -38,3 +38,8 @@ a { color: #2563eb; }
 .role-card { background: #fff; border-radius: 10px; padding: 14px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
 .role-card h3 { margin: 0 0 6px; }
 .role-goal { margin: 0 0 6px; color: #374151; }
+.run-form { background: #fff; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.run-form h3 { margin: 0 0 10px; }
+.run-form label { display: block; margin: 10px 0 4px; font-size: 14px; }
+.run-form select, .run-form input, .run-form textarea { width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box; }
+.run-form button { margin-top: 12px; padding: 10px 18px; border: none; border-radius: 8px; background: #16a34a; color: #fff; cursor: pointer; font-size: 15px; }

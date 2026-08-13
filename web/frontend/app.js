@@ -21,6 +21,7 @@ function loadTab(name) {
   if (name === 'config') loadConfig();
   if (name === 'roles') loadRoles();
   if (name === 'pipeline') loadPipeline();
+  if (name === 'run') loadRun();
 }
 
 async function api(path, opts) {
@@ -190,6 +191,93 @@ async function loadPipeline() {
         <td><code>${esc(s.gate || '—')}</code></td>
       </tr>`).join('')}
     </table>`;
+}
+
+// ── Запуск ────────────────────────────────────────────────────
+let runPoller = null;
+
+function loadRun() {
+  renderRunForm();
+  refreshRunStatus();
+}
+
+function renderRunForm() {
+  $('#run').innerHTML = `
+    <div class="run-form">
+      <h3>Запустить прогон</h3>
+      <label>Режим
+        <select id="run-mode">
+          <option value="greenfield">greenfield — проект с нуля</option>
+          <option value="enhance">enhance — доработка репо</option>
+        </select>
+      </label>
+      <label id="repo-field" style="display:none">Репо (owner/name)
+        <input id="run-repo" placeholder="druner-ai/cardputer-panel">
+      </label>
+      <label>Задача
+        <textarea id="run-task" rows="4" placeholder="Что сделать команде…"></textarea>
+      </label>
+      <button id="run-start">▶ Запустить</button>
+      <span id="run-msg"></span>
+    </div>
+    <div id="run-progress"></div>`;
+
+  $('#run-mode').addEventListener('change', (e) => {
+    $('#repo-field').style.display = e.target.value === 'enhance' ? 'block' : 'none';
+  });
+  $('#run-start').addEventListener('click', async () => {
+    const body = {
+      task: $('#run-task').value,
+      mode: $('#run-mode').value,
+      repo: $('#run-repo').value.trim() || null,
+    };
+    const msg = $('#run-msg');
+    msg.textContent = 'Запускаю…';
+    msg.className = 'hint';
+    try {
+      await api('/run', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+      });
+      msg.textContent = '✅ Запущен';
+      msg.className = 'ok';
+      startRunPoller();
+      refreshRunStatus();
+    } catch (e) {
+      msg.textContent = '❌ ' + e.message;
+      msg.className = 'err';
+    }
+  });
+}
+
+function startRunPoller() {
+  if (runPoller) return;
+  runPoller = setInterval(refreshRunStatus, 4000);
+}
+
+function stopRunPoller() {
+  if (runPoller) { clearInterval(runPoller); runPoller = null; }
+}
+
+async function refreshRunStatus() {
+  let st;
+  try { st = await api('/run/status'); } catch (e) { return; }
+  const el = $('#run-progress');
+  if (!st.pid) { el.innerHTML = ''; return; }
+  const mm = Math.floor(st.elapsed / 60);
+  const ss = String(st.elapsed % 60).padStart(2, '0');
+  const log = (st.log_tail || []).join('\n');
+  el.innerHTML = `
+    <div class="role-card">
+      <h3>${st.running ? '🟢 Прогон идёт' : '🏁 Прогон завершён'} <code>pid ${st.pid}</code></h3>
+      <p>${esc(st.mode)}${st.repo ? ' · ' + esc(st.repo) : ''} · прошло <b>${mm}:${ss}</b></p>
+      <p class="hint">${esc(st.task)}</p>
+      <pre>${esc(log) || '…'}</pre>
+    </div>`;
+  if (st.running) { startRunPoller(); }
+  else {
+    stopRunPoller();
+    el.innerHTML += '<p class="hint">Готово — результат во вкладке «Прогоны».</p>';
+  }
 }
 
 loadDashboard();

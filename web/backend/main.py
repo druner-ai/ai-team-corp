@@ -7,7 +7,10 @@ output/ (история прогонов), пишет оверрайды в team
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import time as time_mod
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -63,6 +66,23 @@ PIPELINE_STAGES = [
 ]
 
 app = FastAPI(title="AI Team Control")
+
+UV = shutil.which("uv") or "/home/deploy/.local/bin/uv"
+_active_run: dict = {}
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+class RunRequest(BaseModel):
+    task: str
+    mode: str = "greenfield"  # "greenfield" | "enhance"
+    repo: str | None = None
 
 
 # ── Конфиг-оверрайды ───────────────────────────────────────────
@@ -247,6 +267,68 @@ def pipeline():
             "soft_budget": config.SOFT_BUDGET_USD,
             "hard_budget": config.HARD_BUDGET_USD,
         },
+    }
+
+
+@app.post("/api/run")
+def start_run(payload: RunRequest):
+    """Запустить прогон команды фоновым subprocess (uv run python main.py ...)."""
+    if _active_run.get("pid") and _pid_alive(_active_run["pid"]):
+        raise HTTPException(409, "Прогон уже запущен")
+    task = payload.task.strip()
+    if not task:
+        raise HTTPException(422, "Пустая задача")
+    if payload.mode == "enhance" and not payload.repo:
+        raise HTTPException(422, "Для enhance укажи репо (owner/name)")
+
+    cmd = [UV, "run", "python", "main.py"]
+    if payload.mode == "enhance":
+        cmd += ["--enhance", (payload.repo or "").strip()]
+    cmd += [task]
+
+    ts = time_mod.strftime("%Y%m%d_%H%M%S")
+    log_path = f"/tmp/aitc-run-{ts}.log"
+    log_file = open(log_path, "w")
+    proc = subprocess.Popen(
+        cmd, cwd=str(ROOT), stdout=log_file, stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    log_file.close()  # закрываем родительскую копию — fd остаётся у ребёнка
+
+    _active_run.update({
+        "pid": proc.pid,
+        "started_at": time_mod.time(),
+        "task": task,
+        "mode": payload.mode,
+        "repo": payload.repo,
+        "log_path": log_path,
+    })
+    return {"ok": True, "pid": proc.pid, "started_at": _active_run["started_at"]}
+
+
+@app.get("/api/run/status")
+def run_status():
+    """Живой статус активного прогона: жив ли процесс, elapsed, хвост лога."""
+    r = _active_run
+    if not r.get("pid"):
+        return {"running": False}
+    running = _pid_alive(r["pid"])
+    elapsed = int(time_mod.time() - r["started_at"]) if r.get("started_at") else 0
+    log_tail = []
+    if r.get("log_path"):
+        try:
+            with open(r["log_path"], "r", errors="ignore") as f:
+                log_tail = f.readlines()[-30:]
+        except OSError:
+            pass
+    return {
+        "running": running,
+        "pid": r.get("pid"),
+        "elapsed": elapsed,
+        "task": r.get("task"),
+        "mode": r.get("mode"),
+        "repo": r.get("repo"),
+        "log_tail": [ln.rstrip() for ln in log_tail],
     }
 
 
