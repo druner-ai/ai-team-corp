@@ -12,6 +12,11 @@ from observability import log_event
 
 _UV = shutil.which("uv") or "/home/deploy/.local/bin/uv"
 
+# Пер-тест таймаут pytest (сек). 120с — чтобы медленные, но прогрессирующие
+# тесты (например 600 последовательных записей) не убивались по ошибке;
+# настоящие зависания ловит глобальный таймаут 300с в subprocess.run.
+_TEST_TIMEOUT = os.getenv("AI_TEAM_TEST_TIMEOUT", "120")
+
 
 def _read_ci_recipe(code_dir: Path) -> str:
     """Собрать текст всех CI-воркфлоу проекта.
@@ -201,7 +206,7 @@ def run_tests(code_directory: str = "") -> str:
         # и агент, чинящий код, не видит расхождения и начинает угадывать.
         try:
             result = subprocess.run(
-                [str(pytest), str(tests_dir), "-vv", "--tb=long", "--timeout=60"],
+                [str(pytest), str(tests_dir), "-vv", "--tb=long", "--timeout={_TEST_TIMEOUT}"],
                 capture_output=True,
                 text=True,
                 timeout=300,
@@ -274,7 +279,7 @@ def run_tests_quiet(code_directory: str) -> tuple[bool, str]:
 
         try:
             result = subprocess.run(
-                [str(pytest), str(tests_dir), "-vv", "--tb=long", "--timeout=60"],
+                [str(pytest), str(tests_dir), "-vv", "--tb=long", "--timeout={_TEST_TIMEOUT}"],
                 capture_output=True, text=True, timeout=300, cwd=str(code_dir),
                 env=runtime_env()
             )
