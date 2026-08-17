@@ -286,6 +286,17 @@ def _score(summary: str) -> tuple[int, int]:
     return -c["passed"], c["failed"] + c["errors"]
 
 
+def _errors_code_side(summary: str) -> bool:
+    """Ошибки сбора ИЗ-ЗА КОДА, а не тестов: ImportError/AttributeError на app.*-модулях.
+
+    Тест-дизайнер правит tests/ и бессилен, когда код не отдаёт ожидаемый экспорт
+    (напр. get_redis_client лежит не в том модуле). Тогда чинить должен разработчик.
+    """
+    return bool(re.search(
+        r"cannot import name .* from ['\"]app\.|AttributeError: <module ['\"]app\.",
+        summary))
+
+
 def _code_snapshot(run_dir: Path) -> dict[str, bytes]:
     """Снять копию кода и конфигов перед попыткой правки.
 
@@ -1346,10 +1357,14 @@ def main():
         snap = _code_snapshot(run_dir)
         context = _fix_context(run_dir, tests_summary, fallback=result_str)
         counts = _parse_pytest_counts(tests_summary)
-        if counts["errors"] > 0:
-            # Ошибки сбора (NameError/ImportError) — набор не собирается: чинит
-            # Test Designer (у него есть право править tests/), а не разработчик
-            # (у которого тесты под замком protect_tests=True).
+        if counts["errors"] > 0 and _errors_code_side(tests_summary):
+            # Ошибки сбора ИЗ-ЗА КОДА (нет экспорта/функции в app.*) — чинит
+            # разработчик: тест-дизайнер править tests/ бессилен.
+            _, u = _phase(f"B{attempt}", [developer],
+                          [make_fix_task(tests_summary, context, attempt)])
+        elif counts["errors"] > 0:
+            # Ошибки сбора в самих тестах (синтаксис, импорт тест-хелперов) — чинит
+            # Test Designer (у него есть право править tests/).
             _, u = _phase(f"B{attempt}", [test_designer],
                           [make_test_fix_task(tests_summary, context, attempt)])
         else:
