@@ -6,7 +6,7 @@
 
 Слои:
   1. systemd-юнит (uvicorn) — постоянный процесс на 127.0.0.1:<свободный порт>
-  2. nginx vhost (alfa-proxy) — <slug>.185.93.105.16.sslip.io → 127.0.0.1:<порт>
+  2. Caddy — <slug>.tochenyi.ru / <slug>.38.244.193.214.sslip.io → 127.0.0.1:<порт>
   3. GitHub — отдельный репозиторий druner-ai/<slug> (отдельная функция)
 """
 import os
@@ -21,9 +21,7 @@ PUBLISH_ROOT = Path.home() / "published"
 SYSTEMD_DIR = Path.home() / ".config" / "systemd" / "user"
 _UV = shutil.which("uv") or "/home/deploy/.local/bin/uv"
 
-NGINX_CONF = Path.home() / "bank-alfa" / "proxy" / "nginx.conf"
-NGINX_CONTAINER = "alfa-proxy"
-NGINX_ANCHOR = "# >>> alfa-hostname managed block"
+CADDY_CONF = Path("/etc/caddy/Caddyfile")
 
 
 def clean_slug(s: str) -> str:
@@ -185,93 +183,84 @@ def publish_service(run_dir: Path, slug: str) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# nginx vhost
+# Caddy route
 # ─────────────────────────────────────────────────────────────────────────
 
-def _vhost_block(slug: str, port: int) -> str:
+def _caddy_block(slug: str, port: int) -> str:
     return (
-        "    # ═══════════════════════════════════════════════\n"
-        f"    # PUBLISHED: {slug}\n"
-        "    # ═══════════════════════════════════════════════\n"
-        "    server {\n"
-        "        listen 80;\n"
-        f"        server_name {slug}.185.93.105.16.sslip.io;\n"
-        "\n"
-        "        location / {\n"
-        f"            proxy_pass http://127.0.0.1:{port};\n"
-        "            proxy_http_version 1.1;\n"
-        "            proxy_set_header Host $host;\n"
-        "            proxy_set_header X-Real-IP $remote_addr;\n"
-        "            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
-        "            proxy_set_header X-Forwarded-Proto $scheme;\n"
-        "            proxy_read_timeout 120s;\n"
-        "        }\n"
-        "    }\n"
+        f"{slug}.38.244.193.214.sslip.io, {slug}.tochenyi.ru {{\n"
+        f"    reverse_proxy 127.0.0.1:{port}\n"
+        "}\n"
     )
 
 
-def _apply_vhost(conf: str, slug: str, port: int) -> str:
-    """Идемпотентно вставить/обновить блок PUBLISHED:<slug> в тексте конфига."""
-    block = _vhost_block(slug, port)
+def _apply_caddy(conf: str, slug: str, port: int) -> str:
+    """Идемпотентно вставить/обновить блок <slug>.tochenyi.ru в Caddyfile."""
+    block = _caddy_block(slug, port)
     pattern = re.compile(
-        r"    # ═+\n    # PUBLISHED: " + re.escape(slug) + r".*?\n    \}\n\n?",
+        rf"{re.escape(slug)}\.38\.244\.193\.214\.sslip\.io.*?\n\}}\n",
         re.DOTALL,
     )
     conf = pattern.sub("", conf)
-    if NGINX_ANCHOR in conf:
-        return conf.replace(NGINX_ANCHOR, block + "\n" + NGINX_ANCHOR)
-    return conf + "\n" + block
+    return conf.rstrip() + "\n\n" + block.rstrip() + "\n"
 
 
-def _nginx_validate(conf_text: str) -> bool:
-    """nginx -t на копии в контейнере; живую конфигурацию не трогает."""
+def _caddy_validate(conf_text: str) -> bool:
+    """caddy validate на копии — живую конфигурацию не трогает."""
     import tempfile
-    fd, tmp = tempfile.mkstemp(suffix=".conf")
+    fd, tmp = tempfile.mkstemp(suffix=".Caddyfile")
     try:
         with os.fdopen(fd, "w") as f:
             f.write(conf_text)
-        r = subprocess.run(["sudo", "docker", "cp", tmp, f"{NGINX_CONTAINER}:/tmp/nginx-check.conf"],
+        r = subprocess.run(["caddy", "validate", "--config", tmp],
                            capture_output=True, text=True, timeout=30)
-        if r.returncode != 0:
-            return False
-        r = subprocess.run(["sudo", "docker", "exec", NGINX_CONTAINER,
-                            "nginx", "-t", "-c", "/tmp/nginx-check.conf"],
-                           capture_output=True, text=True, timeout=30)
-        return "syntax is ok" in (r.stdout + r.stderr)
+        return r.returncode == 0
     finally:
         os.unlink(tmp)
 
 
-def add_nginx_vhost(slug: str, port: int) -> bool:
-    """Добавить vhost для <slug>.185.93.105.16.sslip.io → 127.0.0.1:<port> и перезагрузить nginx."""
+def _read_caddy_conf() -> str:
+    r = subprocess.run(["sudo", "cat", str(CADDY_CONF)], capture_output=True, text=True, timeout=15)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def _write_caddy_conf(text: str) -> bool:
+    r = subprocess.run(["sudo", "tee", str(CADDY_CONF)], input=text, capture_output=True, text=True, timeout=15)
+    return r.returncode == 0
+
+
+def add_caddy_route(slug: str, port: int) -> bool:
+    """Добавить маршрут <slug>.tochenyi.ru → 127.0.0.1:<port> и перезагрузить Caddy."""
     slug = clean_slug(slug)
-    conf = NGINX_CONF.read_text(errors="replace")
-    new_conf = _apply_vhost(conf, slug, port)
+    conf = _read_caddy_conf()
+    new_conf = _apply_caddy(conf, slug, port)
     if new_conf == conf:
         return True  # блок с тем же портом уже есть
-    if not _nginx_validate(new_conf):
+    if not _caddy_validate(new_conf):
         return False
-    NGINX_CONF.write_text(new_conf)
-    r = subprocess.run(["sudo", "docker", "restart", NGINX_CONTAINER],
+    if not _write_caddy_conf(new_conf):
+        return False
+    r = subprocess.run(["sudo", "caddy", "reload", "--config", str(CADDY_CONF), "--force"],
                        capture_output=True, text=True, timeout=60)
     return r.returncode == 0
 
 
-def remove_nginx_vhost(slug: str) -> bool:
-    """Убрать vhost PUBLISHED:<slug> и перезагрузить nginx."""
+def remove_caddy_route(slug: str) -> bool:
+    """Убрать маршрут <slug>.tochenyi.ru и перезагрузить Caddy."""
     slug = clean_slug(slug)
-    conf = NGINX_CONF.read_text(errors="replace")
+    conf = _read_caddy_conf()
     pattern = re.compile(
-        r"    # ═+\n    # PUBLISHED: " + re.escape(slug) + r".*?\n    \}\n\n?",
+        rf"{re.escape(slug)}\.38\.244\.193\.214\.sslip\.io.*?\n\}}\n",
         re.DOTALL,
     )
     new_conf = pattern.sub("", conf)
     if new_conf == conf:
         return True
-    if not _nginx_validate(new_conf):
+    if not _caddy_validate(new_conf):
         return False
-    NGINX_CONF.write_text(new_conf)
-    r = subprocess.run(["sudo", "docker", "restart", NGINX_CONTAINER],
+    if not _write_caddy_conf(new_conf):
+        return False
+    r = subprocess.run(["sudo", "caddy", "reload", "--config", str(CADDY_CONF), "--force"],
                        capture_output=True, text=True, timeout=60)
     return r.returncode == 0
 

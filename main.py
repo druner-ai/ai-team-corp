@@ -1627,7 +1627,7 @@ def main():
     # слаг поддомена/репо — из AI_TEAM_PUBLISH_SLUG (иначе app-<timestamp>).
     if (os.getenv("AI_TEAM_PUBLISH", "").strip().lower() in {"1", "true", "yes", "on"}
             and status == "✅ Успешно"):
-        from publish import publish_service, add_nginx_vhost, push_repo
+        from publish import publish_service, add_caddy_route, push_repo
         slug = (os.getenv("AI_TEAM_PUBLISH_SLUG", "") or f"app-{timestamp}").strip()
         pub_url = repo_url = pub_port = None
         print(f"\n{'─' * 54}\n🚀 PUBLISH (зелёный прогон): {slug}")
@@ -1636,11 +1636,11 @@ def main():
             print(pub["report"])
             pub_port = pub["port"]
             if pub_port:
-                if add_nginx_vhost(slug, pub_port):
-                    pub_url = f"http://{slug}.185.93.105.16.sslip.io"
+                if add_caddy_route(slug, pub_port):
+                    pub_url = f"https://{slug}.tochenyi.ru"
                     print(f"🔗 Опубликовано: {pub_url}")
                 else:
-                    print("⚠️ nginx vhost не добавлен (валидация не прошла)")
+                    print("⚠️ caddy-маршрут не добавлен (валидация не прошла)")
                 repo_url = push_repo(slug, pub["dest"])
                 if repo_url:
                     print(f"🐙 Репозиторий: {repo_url}")
