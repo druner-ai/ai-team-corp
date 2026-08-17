@@ -1,0 +1,100 @@
+E       AssertionError: assert False is True
+E        +  where False = ValidationResult(is_valid=False, errors=[ErrorItem(code='INVALID_CHECKSUM', message='Account number failed checksum validation')]).is_valid
+
+tests/unit/test_account_validator.py:11: AssertionError
+__________________ TestAccountValidator.test_valid_by_account __________________
+
+self = <test_account_validator.TestAccountValidator object at 0x754f3e161970>
+
+    def test_valid_by_account(self):
+        """Валидный белорусский счёт (БИК 9 цифр, счёт 28 цифр)."""
+        result = AccountValidator.validate("153001795", "3012012345678000000000000000")
+>       assert result.is_valid is True
+E       AssertionError: assert False is True
+E        +  where False = ValidationResult(is_valid=False, errors=[ErrorItem(code='INVALID_CHECKSUM', message='Account number failed checksum validation')]).is_valid
+
+tests/unit/test_account_validator.py:17: AssertionError
+_____________________ TestIbanValidator.test_too_long_iban _____________________
+
+self = <test_iban_validator.TestIbanValidator object at 0x754f3e00ce00>
+
+    def test_too_long_iban(self):
+        """Длина больше 34 — INVALID_LENGTH."""
+        result = IbanValidator.validate("DE89370400440532013000DE8937040044")
+        assert result.is_valid is False
+>       assert any(e.code == "INVALID_LENGTH" for e in result.errors)
+E       assert False
+E        +  where False = any(<generator object TestIbanValidator.test_too_long_iban.<locals>.<genexpr> at 0x754f3c8597d0>)
+
+tests/unit/test_iban_validator.py:35: AssertionError
+_________________ TestIbanValidator.test_invalid_country_code __________________
+
+self = <test_iban_validator.TestIbanValidator object at 0x754f3e00cf50>
+
+    def test_invalid_country_code(self):
+        """Неверный код страны — INVALID_FORMAT."""
+        result = IbanValidator.validate("XX89370400440532013000")
+        assert result.is_valid is False
+>       assert any(e.code == "INVALID_FORMAT" for e in result.errors)
+E       assert False
+E        +  where False = any(<generator object TestIbanValidator.test_invalid_country_code.<locals>.<genexpr> at 0x754f3c8852f0>)
+
+tests/unit/test_iban_validator.py:41: AssertionError
+___________________ TestMaskingFilter.test_masks_iban_in_log ___________________
+
+self = <test_logging_filter.TestMaskingFilter object at 0x754f3e00cb90>
+log_stream = <_io.StringIO object at 0x754f3c880580>
+
+    def test_masks_iban_in_log(self, log_stream):
+        """ASSERT-02: IBAN (22 символа) маскируется в логе."""
+        logger = logging.getLogger("test_masking")
+        logger.info("Processing IBAN DE89370400440532013000")
+        output = log_stream.getvalue()
+        assert "DE89370400440532013000" not in output
+>       assert "DE89****************3000" in output
+E       AssertionError: assert 'DE89****************3000' in 'Processing IBAN DE89**************3000\n'
+
+tests/unit/test_logging_filter.py:37: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     test_masking:test_logging_filter.py:34 Processing IBAN DE89**************3000
+__________________________ TestMasker.test_mask_iban ___________________________
+
+self = <test_masker.TestMasker object at 0x754f3e00f440>
+
+    def test_mask_iban(self):
+        """ASSERT-01: IBAN маскируется: первые 4 + звёздочки + последние 4."""
+        masked = Masker.mask("DE89370400440532013000")
+>       assert masked == "DE89****************3000"
+E       AssertionError: assert 'DE89**************3000' == 'DE89****************3000'
+E         
+E         - DE89****************3000
+E         ?                   --
+E         + DE89**************3000
+
+tests/unit/test_masker.py:16: AssertionError
+_________________________ TestMasker.test_mask_account _________________________
+
+self = <test_masker.TestMasker object at 0x754f3e00f590>
+
+    def test_mask_account(self):
+        """ASSERT-01: расчётный счёт маскируется."""
+        masked = Masker.mask("044525225|40702810400000025200")
+>       assert masked == "0445********25200"
+E       AssertionError: assert '0445**********************5200' == '0445********25200'
+E         
+E         - 0445********25200
+E         + 0445**********************5200
+
+tests/unit/test_masker.py:21: AssertionError
+=========================== short test summary info ============================
+FAILED tests/integration/test_account_endpoint.py::TestAccountEndpoint::test_valid_account_returns_200
+FAILED tests/integration/test_account_endpoint.py::TestAccountEndpoint::test_mask_contains_first4_last4
+FAILED tests/integration/test_iban_endpoint.py::TestIbanEndpoint::test_mask_contains_first4_last4
+FAILED tests/unit/test_account_validator.py::TestAccountValidator::test_valid_ru_account
+FAILED tests/unit/test_account_validator.py::TestAccountValidator::test_valid_by_account
+FAILED tests/unit/test_iban_validator.py::TestIbanValidator::test_too_long_iban
+FAILED tests/unit/test_iban_validator.py::TestIbanValidator::test_invalid_country_code
+FAILED tests/unit/test_logging_filter.py::TestMaskingFilter::test_masks_iban_in_log
+FAILED tests/unit/test_masker.py::TestMasker::test_mask_iban - AssertionError...
+FAILED tests/unit/test_masker.py::TestMasker::test_mask_account - AssertionEr...
+======================== 10 failed, 76 passed in 1.66s =========================

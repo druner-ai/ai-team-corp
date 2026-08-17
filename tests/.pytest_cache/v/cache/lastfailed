@@ -1,0 +1,12 @@
+{
+  "integration/test_account_endpoint.py::TestAccountEndpoint::test_valid_account_returns_200": true,
+  "integration/test_account_endpoint.py::TestAccountEndpoint::test_mask_contains_first4_last4": true,
+  "integration/test_iban_endpoint.py::TestIbanEndpoint::test_mask_contains_first4_last4": true,
+  "unit/test_account_validator.py::TestAccountValidator::test_valid_ru_account": true,
+  "unit/test_account_validator.py::TestAccountValidator::test_valid_by_account": true,
+  "unit/test_iban_validator.py::TestIbanValidator::test_too_long_iban": true,
+  "unit/test_iban_validator.py::TestIbanValidator::test_invalid_country_code": true,
+  "unit/test_logging_filter.py::TestMaskingFilter::test_masks_iban_in_log": true,
+  "unit/test_masker.py::TestMasker::test_mask_iban": true,
+  "unit/test_masker.py::TestMasker::test_mask_account": true
+}
