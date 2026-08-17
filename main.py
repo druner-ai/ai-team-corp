@@ -427,7 +427,7 @@ def _tests_restore(run_dir: Path, snap: dict[str, bytes]) -> int:
     return changed
 
 
-def gate_g3(run_dir: Path) -> tuple[bool, list[str]]:
+def gate_g3(run_dir: Path, spec: str = "") -> tuple[bool, list[str]]:
     """Гейт G3: упаковка не сломала тесты и CI не прячет падения.
 
     Раньше ci.yml уезжал в GitHub никем не проверенным: синтаксически битый
@@ -435,7 +435,7 @@ def gate_g3(run_dir: Path) -> tuple[bool, list[str]]:
     GitHub, а `|| true` не обнаруживался вовсе — CI становится зелёным всегда.
     """
     problems: list[str] = []
-    ok, summary = _gate("G3_tests", run_dir)
+    ok, summary = _gate("G3_tests", run_dir, spec)
     if not ok:
         problems.append("упаковка сломала зелёные тесты")
     wf = run_dir / ".github" / "workflows" / "ci.yml"
@@ -1572,7 +1572,7 @@ def main():
         _, u = _phase("C", [devops], make_phase_c_tasks())
         _accrue(u)
         # Гейт G3: упаковка не сломала тесты и CI не прячет падения.
-        g3_ok, g3_problems = gate_g3(run_dir)
+        g3_ok, g3_problems = gate_g3(run_dir, spec)
         if g3_ok:
             status = "✅ Успешно"
         else:
