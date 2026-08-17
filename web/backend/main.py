@@ -241,11 +241,23 @@ def _parse_report(path: Path) -> dict:
     }
 
 
+def _run_id_is_active(run_id: str) -> bool:
+    """run_id (YYYYMMDD_HHMMSS) близок к started_at активного прогона (±3с)."""
+    try:
+        t = time_mod.mktime(time_mod.strptime(run_id, "%Y%m%d_%H%M%S"))
+        # run-директория создаётся уже внутри main.py, ПОСЛЕ старта uv run (зазор 5–20с)
+        return -3 <= (t - _active_run.get("started_at", 0)) <= 60
+    except (ValueError, TypeError):
+        return False
+
+
 @app.get("/api/runs")
 def list_runs():
     out = ROOT / "output"
     if not out.is_dir():
         return []
+    active_pid = _active_run.get("pid")
+    alive = bool(active_pid) and _pid_alive(active_pid)
     runs = []
     for d in sorted(out.iterdir(), reverse=True):
         if not d.is_dir():
@@ -255,6 +267,7 @@ def list_runs():
         runs.append({
             "id": d.name,
             "has_report": report.exists(),
+            "running": alive and _run_id_is_active(d.name),
             **metrics,
         })
     return runs

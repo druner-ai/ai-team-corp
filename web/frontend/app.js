@@ -111,7 +111,7 @@ async function loadRuns() {
     ${runs.map(r => `
       <tr>
         <td><code>${esc(r.id)}</code></td>
-        <td>${esc(r.status || '—')}</td>
+        <td>${r.running ? '🟢 <b>в процессе</b>' : esc(r.status || '—')}</td>
         <td>$${esc(r.cost || '—')}</td>
         <td>${esc(r.time || '—')}с</td>
         <td><button class="view-run" data-id="${r.id}">открыть</button></td>
