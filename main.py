@@ -155,6 +155,15 @@ def _parse_pytest_counts(output: str) -> dict:
     return counts
 
 
+def _collection_failed(output: str) -> bool:
+    """Сбор тестов упал (импорт/INTERNALERROR/«no tests ran») — это провал, а не «0 проблем»."""
+    low = output.lower()
+    return any(m in low for m in (
+        "interneerror", "modulenotfounderror", "no tests ran",
+        "collected 0 items", "importerror",
+    ))
+
+
 # ─── callback: захват вывода каждой задачи ────────────────────
 
 def _phase(name: str, agents: list, tasks: list) -> tuple[str, dict]:
@@ -276,7 +285,7 @@ def _gate(name: str, run_dir: Path, spec: str = "") -> tuple[bool, str]:
         by_prio = _classify_failures(_parse_failed_tests(summary), docs, priorities)
         severity = {"p0_failing": by_prio["P0"], "p1_failing": by_prio["P1"],
                     "p2_failing": by_prio["P2"]}
-        green = counts["errors"] == 0 and not by_prio["P0"]
+        green = counts["errors"] == 0 and not by_prio["P0"] and counts["passed"] > 0 and not _collection_failed(summary)
         _LAST_SEVERITY = severity
     log_event({"event": "gate", "gate": name, "green": green, **counts, **severity})
     (run_dir / f"gate_{name}.txt").write_text(summary)
@@ -304,6 +313,8 @@ def _score(summary: str) -> tuple[int, int]:
     ухудшением и откатывал полезную правку.
     """
     c = _parse_pytest_counts(summary)
+    if _collection_failed(summary) or (c["passed"] == 0 and c["failed"] == 0 and c["errors"] == 0):
+        return 0, 1_000_000
     return -c["passed"], c["failed"] + c["errors"]
 
 
