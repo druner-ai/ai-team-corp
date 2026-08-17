@@ -462,6 +462,11 @@ def _parse_run_phases(run_dir):
         elif ev == "gate":
             gates.append({"id": e.get("gate"), "label": _gate_label(e.get("gate")),
                           "green": e.get("green"),
+                          "passed": e.get("passed"), "failed": e.get("failed"),
+                          "errors": e.get("errors"),
+                          "p0": len(e.get("p0_failing") or []),
+                          "p1": len(e.get("p1_failing") or []),
+                          "p2": len(e.get("p2_failing") or []),
                           "asserts": e.get("asserts"), "problems": e.get("problems")})
     seen = set(phases)
     for pid in PHASES_ORDER:

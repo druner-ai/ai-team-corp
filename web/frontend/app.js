@@ -314,9 +314,14 @@ async function refreshRunStatus() {
   }).join('');
   const gates = (st.gates || []).map(g => {
     const ic = g.green === true ? '🟢' : (g.green === false ? '🔴' : '⚪');
-    const a = g.asserts != null ? ' · ' + g.asserts + ' asserts' : '';
-    const lbl = g.label ? ' — ' + esc(g.label) : '';
-    return `<span class="gate">${ic} <b>${esc(g.id)}</b>${lbl}${a}</span>`;
+    const p = g.passed, f = g.failed, e = g.errors;
+    if (p != null || f != null || e != null) {
+      const verb = g.green === true ? 'прошёл' : (g.green === false ? 'не прошёл' : '');
+      const warn = (g.green === true && f > 0) ? ' · <i>некритично</i>' : '';
+      const stats = `<span class="hint"> · ${p ?? 0} passed / ${f ?? 0} failed / ${e ?? 0} errors</span>`;
+      return `<span class="gate" title="${esc(g.label || g.id)}">${ic} <b>${esc(g.id)}</b> ${verb}${stats}${warn}</span>`;
+    }
+    return `<span class="gate">${ic} <b>${esc(g.id)}</b> — ${esc(g.label || '')}</span>`;
   }).join(' ');
   const cost = st.total_cost != null ? ' · <b>$' + Number(st.total_cost).toFixed(3) + '</b>' : '';
   const log = (st.log_tail || []).join('\n');
