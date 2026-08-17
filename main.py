@@ -44,6 +44,7 @@ from observability import init_log, log_event
 _all_outputs: list[tuple[str, str, str, dict]] = []  # (task_name, agent_role, raw_output, json_dict)
 _written_files: dict[str, Path] = {}  # манифест всего, что записано на диск
 _RUN_DIR: Path | None = None
+_LAST_SEVERITY: dict = {}
 _FIX_ATTEMPT: int = 0        # номер текущей попытки починки, 0 — вне цикла правок
 _CHEAP_MODE: bool = False    # режим дешёвых моделей после soft-порога бюджета
 
@@ -257,16 +258,36 @@ def _memory_append(repo: str, entry: str) -> None:
         pass
 
 
-def _gate(name: str, run_dir: Path) -> tuple[bool, str]:
-    """Детерминированный гейт: pytest. Единственный источник вердикта."""
+def _gate(name: str, run_dir: Path, spec: str = "") -> tuple[bool, str]:
+    """Детерминированный гейт: pytest. Единственный источник вердикта.
+
+    Если передан spec — вердикт по КРИТИЧНОСТИ (P0/P1/P2):
+    green = 0 ошибок сбора И 0 падений P0 (P1/P2 не блокируют деплой).
+    Без spec (G3, G_base) — строго «всё зелёное».
+    """
+    global _LAST_SEVERITY
     from tools import run_tests_quiet
     green, summary = run_tests_quiet(str(run_dir))
     counts = _parse_pytest_counts(summary)
-    # Ключ вердикта — green, не passed: у pytest есть своё passed (число тестов),
-    # и одинаковые имена молча затирают вердикт в журнале.
-    log_event({"event": "gate", "gate": name, "green": green, **counts})
+    severity: dict = {}
+    if spec:
+        priorities = assert_priorities(spec)
+        docs = _test_docstrings(run_dir)
+        by_prio = _classify_failures(_parse_failed_tests(summary), docs, priorities)
+        severity = {"p0_failing": by_prio["P0"], "p1_failing": by_prio["P1"],
+                    "p2_failing": by_prio["P2"]}
+        green = counts["errors"] == 0 and not by_prio["P0"]
+        _LAST_SEVERITY = severity
+    log_event({"event": "gate", "gate": name, "green": green, **counts, **severity})
     (run_dir / f"gate_{name}.txt").write_text(summary)
     verdict = "ЗЕЛЁНЫЙ" if green else "КРАСНЫЙ"
+    if severity:
+        if severity["p0_failing"]:
+            verdict = "КРАСНЫЙ (P0)"
+        elif severity["p1_failing"]:
+            verdict = f"ЗЕЛЁНЫЙ (P1-ворнинги: {len(severity['p1_failing'])})"
+        elif severity["p2_failing"]:
+            verdict = f"ЗЕЛЁНЫЙ (P2-ворнинги: {len(severity['p2_failing'])})"
     _status_append(run_dir, f"## Гейт {name}: {verdict} — "
                             f"{counts['passed']} passed / {counts['failed']} failed / "
                             f"{counts['errors']} errors")
@@ -449,7 +470,7 @@ ASSERT_RE = re.compile(r"ASSERT-(\d{1,3})")
 # иначе любая ссылка в тексте раздувала бы знаменатель покрытия.
 # Маркеры списка, отступы и markdown-жирный шрифт допускаются.
 ASSERT_DECL_RE = re.compile(
-    r"\s*(?:[-*+]\s*|\d+[.)]\s*)?\**\s*ASSERT-(\d{1,3})\s*\**\s*:")
+    r"\s*(?:[-*+]\s*|\d+[.)]\s*)?\**\s*ASSERT-(\d{1,3})\s*\**\s*(?:\[(P[012])\]\s*)?:")
 
 
 def _assert_decls(spec: str) -> list[str]:
@@ -465,6 +486,49 @@ def spec_asserts(spec: str) -> list[str]:
         if num not in found:
             found.append(num)
     return found
+
+
+def assert_priorities(spec: str) -> dict[str, str]:
+    """ASSERT-NN -> приоритет (P0/P1/P2, дефолт P1)."""
+    prio: dict[str, str] = {}
+    for line in (spec or "").splitlines():
+        m = ASSERT_DECL_RE.match(line)
+        if m:
+            prio[m.group(1).zfill(2)] = m.group(2) or "P1"
+    return prio
+
+
+def _test_priority(docstring: str, priorities: dict[str, str]) -> str:
+    """Приоритет теста: максимум приоритетов ASSERT-NN, на которые он ссылается."""
+    refs = [n.zfill(2) for n in ASSERT_RE.findall(docstring or "")]
+    if not refs:
+        return "P1"
+    for pp in ("P0", "P1", "P2"):
+        if any(priorities.get(r, "P1") == pp for r in refs):
+            return pp
+    return "P1"
+
+
+def _parse_failed_tests(summary: str) -> list[str]:
+    """Имена упавших тестов из pytest-вывода (file::test_name)."""
+    names: list[str] = []
+    for line in summary.splitlines():
+        m = re.search(r"FAILED\s+(\S+?::\S+)", line)
+        if m:
+            names.append(m.group(1))
+    return names
+
+
+def _classify_failures(failed: list[str], docs: dict[str, str],
+                       priorities: dict[str, str]) -> dict[str, list[str]]:
+    """Разложить упавшие тесты по приоритетам P0/P1/P2."""
+    by_prio = {"P0": [], "P1": [], "P2": []}
+    func_docs = {name.rsplit("::", 1)[-1]: doc for name, doc in docs.items()}
+    for fname in failed:
+        fn = fname.rsplit("::", 1)[-1]
+        pp = _test_priority(func_docs.get(fn, ""), priorities)
+        by_prio[pp].append(fname)
+    return by_prio
 
 
 def gate_g0_spec(spec: str) -> tuple[bool, list[str], list[str]]:
@@ -1330,7 +1394,7 @@ def main():
     _accrue(u)
 
     # ── Гейт G1: единственный источник вердикта ────────────────
-    tests_green, tests_summary = _gate("G1", run_dir)
+    tests_green, tests_summary = _gate("G1", run_dir, spec)
     # Гейт G1a: связь тестов со спекой. Метрика, а не блокировка — вердикт
     # по-прежнему только у pytest.
     trace = gate_g1a_traceability(run_dir, spec)
@@ -1371,7 +1435,7 @@ def main():
             _, u = _phase(f"B{attempt}", [developer],
                           [make_fix_task(tests_summary, context, attempt)])
         _accrue(u)
-        tests_green, new_summary = _gate(f"G2_{attempt}", run_dir)
+        tests_green, new_summary = _gate(f"G2_{attempt}", run_dir, spec)
         after_score = _score(new_summary)
         if not tests_green and after_score > before_score:
             # Стало хуже: меньше пройденных либо столько же, но больше проблем.
@@ -1455,7 +1519,7 @@ def main():
                 print(f"\nПРАВКА АРБИТРА ОТКЛОНЕНА: {why}")
                 print(f"  восстановлено: тестов {n_t}, файлов кода {n_c}")
             else:
-                tests_green, new_summary = _gate("G2_arb", run_dir)
+                tests_green, new_summary = _gate("G2_arb", run_dir, spec)
                 after_score = _score(new_summary)
                 if not tests_green and after_score > before_score:
                     arbiter_accepted = False
@@ -1493,7 +1557,7 @@ def main():
             _, u = _phase(f"D2{d2_attempt}", [developer],
                           [make_fix_task(tests_summary, d2_ctx, d2_attempt)])
             _accrue(u)
-            tests_green, new_summary = _gate(f"G2_arbfix{d2_attempt}", run_dir)
+            tests_green, new_summary = _gate(f"G2_arbfix{d2_attempt}", run_dir, spec)
             d2_after = _score(new_summary)
             if not tests_green and d2_after > d2_before:
                 _code_restore(run_dir, d2_snap)
@@ -1584,6 +1648,10 @@ def main():
     print(f"📊 Метрики выполнения")
     print(f"{'─' * 54}")
     print(f"  Статус:         {status}")
+    if _LAST_SEVERITY and not _LAST_SEVERITY.get("p0_failing"):
+        warn = _LAST_SEVERITY.get("p1_failing", []) + _LAST_SEVERITY.get("p2_failing", [])
+        if warn:
+            print(f"  Некритичные падения (P1/P2): {len(warn)}")
     print(f"  Время:          {duration:.1f} сек")
     print(f"  Токенов вход:   {tokens_in:,}")
     print(f"  Токенов выход:  {tokens_out:,}")
