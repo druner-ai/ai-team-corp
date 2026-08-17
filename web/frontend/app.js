@@ -211,13 +211,14 @@ function renderRunForm() {
           <option value="enhance">enhance — доработка репо</option>
         </select>
       </label>
-      <label id="repo-field" style="display:none">Репо (owner/name)
-        <input id="run-repo" placeholder="druner-ai/cardputer-panel">
+      <label id="repo-field" style="display:none">Репо
+        <select id="run-repo"><option value="">— выбери репо —</option></select>
       </label>
       <label>Задача
         <textarea id="run-task" rows="4" placeholder="Что сделать команде…"></textarea>
       </label>
       <button id="run-start">▶ Запустить</button>
+      <button id="run-stop" style="background:#b91c1c;color:#fff">🛑 Стоп</button>
       <span id="run-msg"></span>
     </div>
     <div id="run-progress"></div>`;
@@ -225,11 +226,14 @@ function renderRunForm() {
   $('#run-mode').addEventListener('change', (e) => {
     $('#repo-field').style.display = e.target.value === 'enhance' ? 'block' : 'none';
   });
+  loadRepoOptions();
+
   $('#run-start').addEventListener('click', async () => {
+    const repoVal = $('#run-repo').value.trim();
     const body = {
       task: $('#run-task').value,
       mode: $('#run-mode').value,
-      repo: $('#run-repo').value.trim() || null,
+      repo: repoVal || null,
     };
     const msg = $('#run-msg');
     msg.textContent = 'Запускаю…';
@@ -247,6 +251,35 @@ function renderRunForm() {
       msg.className = 'err';
     }
   });
+
+  $('#run-stop').addEventListener('click', stopRun);
+}
+
+async function loadRepoOptions() {
+  const sel = $('#run-repo');
+  if (!sel || sel.tagName !== 'SELECT') return;
+  sel.innerHTML = '<option value="">— выбери репо —</option>';
+  try {
+    const repos = await api('/repos');
+    sel.innerHTML += repos.map(r =>
+      `<option value="druner-ai/${r.name}">${esc(r.name)}${r.desc ? ' — ' + esc(r.desc) : ''}</option>`
+    ).join('');
+  } catch (e) {}
+}
+
+async function stopRun() {
+  const msg = $('#run-msg');
+  msg.textContent = 'Останавливаю…';
+  msg.className = 'hint';
+  try {
+    const r = await api('/run/stop', { method: 'POST' });
+    msg.textContent = r.stopped ? '🛑 Остановлен' : 'Нет активного прогона';
+    msg.className = r.stopped ? 'ok' : 'hint';
+    refreshRunStatus();
+  } catch (e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.className = 'err';
+  }
 }
 
 function startRunPoller() {
@@ -258,20 +291,43 @@ function stopRunPoller() {
   if (runPoller) { clearInterval(runPoller); runPoller = null; }
 }
 
+function setRunFormDisabled(disabled) {
+  ['#run-mode', '#run-repo', '#run-task', '#run-start'].forEach(sel => {
+    const el = $(sel);
+    if (el) el.disabled = disabled;
+  });
+}
+
 async function refreshRunStatus() {
   let st;
   try { st = await api('/run/status'); } catch (e) { return; }
   const el = $('#run-progress');
-  if (!st.pid) { el.innerHTML = ''; return; }
+  if (!st.pid) { el.innerHTML = ''; setRunFormDisabled(false); return; }
+  setRunFormDisabled(!!st.running);
   const mm = Math.floor(st.elapsed / 60);
   const ss = String(st.elapsed % 60).padStart(2, '0');
+  const icon = {done:'✅', running:'🔄', pending:'⬜', failed:'❌', skipped:'⏭️'};
+  const phases = (st.phases || []).map(p => {
+    const c = p.cost != null ? ' · $' + Number(p.cost).toFixed(3) : '';
+    const d = p.duration != null ? ' · ' + Math.round(p.duration) + 'с' : '';
+    return `<div class="phase ${p.status}"><span>${icon[p.status] || '·'}</span> <b>${esc(p.id)}</b> ${esc(p.label)}<span class="hint">${c}${d}</span></div>`;
+  }).join('');
+  const gates = (st.gates || []).map(g => {
+    const ic = g.green === true ? '🟢' : (g.green === false ? '🔴' : '⚪');
+    const a = g.asserts != null ? ' · ' + g.asserts + ' asserts' : '';
+    const lbl = g.label ? ' — ' + esc(g.label) : '';
+    return `<span class="gate">${ic} <b>${esc(g.id)}</b>${lbl}${a}</span>`;
+  }).join(' ');
+  const cost = st.total_cost != null ? ' · <b>$' + Number(st.total_cost).toFixed(3) + '</b>' : '';
   const log = (st.log_tail || []).join('\n');
   el.innerHTML = `
     <div class="role-card">
       <h3>${st.running ? '🟢 Прогон идёт' : '🏁 Прогон завершён'} <code>pid ${st.pid}</code></h3>
-      <p>${esc(st.mode)}${st.repo ? ' · ' + esc(st.repo) : ''} · прошло <b>${mm}:${ss}</b></p>
-      <p class="hint">${esc(st.task)}</p>
-      <pre>${esc(log) || '…'}</pre>
+      <p>${esc(st.mode)}${st.repo ? ' · ' + esc(st.repo) : ''} · прошло <b>${mm}:${ss}</b>${cost}</p>
+      <details><summary class="hint">Задача (${st.task.length} симв.)</summary><p class="hint task-full">${esc(st.task)}</p></details>
+      <div class="phases">${phases}</div>
+      <div class="gates">${gates}</div>
+      <details><summary class="hint">Лог</summary><pre>${esc(log) || '…'}</pre></details>
     </div>`;
   if (st.running) { startRunPoller(); }
   else {

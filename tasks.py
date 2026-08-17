@@ -196,8 +196,8 @@ def make_baseline_tests_task(existing_code: str) -> Task:
         Пример:
         {{
           "files": [
-            {{"path": "tests/conftest.py", "content": "import pytest\\n..."}},
-            {{"path": "tests/test_api.py", "content": "def test_...():\\n    ..."}}
+            {{"path": "tests/conftest.py", "content": "import pytest\n..."}},
+            {{"path": "tests/test_api.py", "content": "def test_...():\n    ..."}}
           ]
         }}
 
@@ -242,7 +242,21 @@ def make_impl_tasks(spec: str, enhance: bool = False, existing_code: str = "",
         "маршрутов (например dict ↔ list, список полей ответа). Существующие "
         "тесты проверяют этот контракт — смена сломает их.\n"
         "- не переписывай файл целиком и не трогай рабочие методы: меняй "
-        "только то, что нужно новой фиче, остальное оставляй как есть.\n\n"
+        "только то, что нужно новой фиче, остальное оставляй как есть.\n"
+        "НЕ ТРОГАЙ ИНФРАСТРУКТУРНЫЕ/ВХОДНЫЕ ФАЙЛЫ БЕЗ НУЖДЫ:\n"
+        "- если фича не меняет API-маршруты, НЕ возвращай main.py / app.py / "
+        "entrypoint вовсе (даже «мелкую правку»). Смена монтирования статики, "
+        "именования роутов или способа загрузки данных (например "
+        "load_stations() → app.state) ломает соседние тесты и регрессит. "
+        "Entrypoint меняется ТОЛЬКО если спека прямо требует новый эндпоинт.\n"
+        "- не перемонтируй StaticFiles и не меняй публичные пути отдачи "
+        "статики/манифеста — фронтенд и тесты держат их как контракт.\n"
+        "НЕ ВЫДУМЫВАЙ ВНЕШНИЕ URL/ИДЕНТИФИКАТОРЫ:\n"
+        "- если генерируешь данные с внешними ссылками (URL потоков, "
+        "endpoint'ы сторонних сервисов, слаги) — они должны быть РЕАЛЬНЫМИ. "
+        "Не сочиняй slug/путь по аналогии. Если не уверен в URL — проверь "
+        "доступность (HEAD/GET → 200), либо оставь пустым и пометь TODO. "
+        "Битый URL в данных = галлюцинация = баг.\n\n"
         f"=== ТЕКУЩИЙ КОД ПРОЕКТА ===\n{existing_code}\n=== КОНЕЦ КОДА ===\n\n"
     ) if enhance else ""
     design_block = (
@@ -267,9 +281,9 @@ def make_impl_tasks(spec: str, enhance: bool = False, existing_code: str = "",
         Пример:
         {{
           "files": [
-            {{"path": "tests/conftest.py", "content": "import pytest\\n..."}},
-            {{"path": "tests/test_health.py", "content": "import pytest\\n..."}},
-            {{"path": "tests/test_create_url.py", "content": "import pytest\\n..."}}
+            {{"path": "tests/conftest.py", "content": "import pytest\n..."}},
+            {{"path": "tests/test_health.py", "content": "import pytest\n..."}},
+            {{"path": "tests/test_create_url.py", "content": "import pytest\n..."}}
           ]
         }}
 
@@ -397,11 +411,11 @@ def make_impl_tasks(spec: str, enhance: bool = False, existing_code: str = "",
         Пример:
         {{
           "files": [
-            {{"path": "app/main.py", "content": "from fastapi import FastAPI\\n..."}},
-            {{"path": "app/urls/router.py", "content": "from fastapi import APIRouter\\n..."}},
-            {{"path": "requirements.txt", "content": "fastapi==0.110.0\\n..."}},
-            {{"path": "requirements-dev.txt", "content": "pytest==8.0.0\\nhttpx==0.27.0\\n..."}},
-            {{"path": "pytest.ini", "content": "[pytest]\\npythonpath = .\\n..."}}
+            {{"path": "app/main.py", "content": "from fastapi import FastAPI\n..."}},
+            {{"path": "app/urls/router.py", "content": "from fastapi import APIRouter\n..."}},
+            {{"path": "requirements.txt", "content": "fastapi==0.110.0\n..."}},
+            {{"path": "requirements-dev.txt", "content": "pytest==8.0.0\nhttpx==0.27.0\n..."}},
+            {{"path": "pytest.ini", "content": "[pytest]\npythonpath = .\n..."}}
           ]
         }}
 
@@ -553,6 +567,14 @@ def make_fix_task(pytest_output: str, context: str, attempt: int) -> Task:
         Верни JSON с полем files — массив объектов {{"path": "...", "content": "..."}}.
         Возвращай ТОЛЬКО изменённые файлы, не всю базу.
 
+        СНАЧАЛА СГРУППИРУЙ ПАДЕНИЯ:
+        Если несколько тестов падают с ПОХОЖИМ сообщением — одинаковый файл в
+        traceback, одна и та же ошибка («object is not subscriptable», KeyError,
+        ValidationError, AssertionError на одном и том же поле) — у них почти
+        наверняка ОДНА общая причина. Исправь КОРЕНЬ (например, доступ к
+        Pydantic-модели как к словарю rb["id"] → rb.id), а не каждый тест по
+        отдельности: одна корневая правка закрывает сразу несколько падений.
+
         ПРАВИЛА:
         - Правь только то, что падает. Точечные правки, не переписывание с нуля.
         - НЕ меняй сигнатуру и возвращаемый тип существующих методов/эндпоинтов
@@ -649,7 +671,7 @@ def make_arbiter_task(pytest_output: str, context: str, spec: str,
     remind_block = (
         "\n        !!! ПРОШЛЫЙ РАЗ ТЫ НЕ СОБЛЮЛ ФОРМАТ ОТВЕТА !!!\n"
         "        Первая строка первого файла ОБЯЗАТЕЛЬНО должна быть строкой-комментарием:\n"
-        "        ARBITER: <прав тест | прав код | спека молчала> — <цитата из спеки или\n"
+        "        # ARBITER: <прав тест | прав код | спека молчала> — <цитата из спеки или\n"
         "        формулировка нового требования> — <что именно исправлено>\n"
         "        Без этой строки твой ответ отбрасывается целиком, правка откатывается.\n"
         if remind_format else "")
@@ -707,7 +729,7 @@ def make_arbiter_task(pytest_output: str, context: str, spec: str,
         Верни JSON с полем files — массив объектов {{"path": "...", "content": "..."}}.
         Только изменённые файлы. Строку-комментарий с решением запиши ПЕРВОЙ
         СТРОКОЙ ПЕРВОГО ФАЙЛА-КОДА (.py) в формате:
-        ARBITER: <прав тест | прав код | спека молчала> — <цитата из спеки или
+        # ARBITER: <прав тест | прав код | спека молчала> — <цитата из спеки или
         формулировка нового требования> — <что именно исправлено>
 
         КРИТИЧНО — НЕ ЛОМАЙ ФАЙЛЫ ДАННЫХ:

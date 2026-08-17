@@ -730,6 +730,19 @@ def _write_file_safe(run_dir: Path, filepath: str, content: str, overwrite: bool
                 break
         full_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Детерминированный guard: строка «ARBITER: …» в .py обязана быть #-комментарием.
+    # Арбитр иногда пишет её без решётки — тогда файл не парсится и тесты не собираются.
+    if filepath.endswith(".py") and content:
+        _lines = content.split("\n")
+        for _i, _ln in enumerate(_lines):
+            _s = _ln.lstrip()
+            if not _s:
+                continue
+            if _s.startswith("ARBITER") and not _s.startswith("#"):
+                _pad = _ln[: len(_ln) - len(_s)]
+                _lines[_i] = _pad + "# " + _s
+                content = "\n".join(_lines)
+            break
     full_path.write_text(content)
     return full_path
 
@@ -1469,8 +1482,8 @@ def main():
             d2_after = _score(new_summary)
             if not tests_green and d2_after > d2_before:
                 _code_restore(run_dir, d2_snap)
-                print(f"ДОВОДКА D2-{d2_attempt} ОТКАЧЕНА (стало хуже)")
-                break
+                print(f"ДОВОДКА D2-{d2_attempt} ОТКАЧЕНА (стало хуже) — откат, следующая попытка")
+                continue
             tests_summary = new_summary
             if tests_green:
                 print(f"ДОВОДКА D2-{d2_attempt}: тесты зелёные")
@@ -1612,11 +1625,12 @@ def main():
     # Независимо от зелёного гейта (deploy-anyway): «потыкать почти рабочий
     # код» — отдельная цель от «код готов». Включается env AI_TEAM_PUBLISH=1,
     # слаг поддомена/репо — из AI_TEAM_PUBLISH_SLUG (иначе app-<timestamp>).
-    if os.getenv("AI_TEAM_PUBLISH", "").strip().lower() in {"1", "true", "yes", "on"}:
+    if (os.getenv("AI_TEAM_PUBLISH", "").strip().lower() in {"1", "true", "yes", "on"}
+            and status == "✅ Успешно"):
         from publish import publish_service, add_nginx_vhost, push_repo
         slug = (os.getenv("AI_TEAM_PUBLISH_SLUG", "") or f"app-{timestamp}").strip()
         pub_url = repo_url = pub_port = None
-        print(f"\n{'─' * 54}\n🚀 PUBLISH (deploy-anyway): {slug}")
+        print(f"\n{'─' * 54}\n🚀 PUBLISH (зелёный прогон): {slug}")
         try:
             pub = publish_service(run_dir, slug)
             print(pub["report"])
@@ -1634,6 +1648,20 @@ def main():
             print(f"⚠️ Publish упал: {e}")
         log_event({"event": "publish", "slug": slug, "port": pub_port,
                    "url": pub_url, "repo": repo_url})
+
+        # Дописать ссылку на живой проект в отчёт (то, ради чего прогон запускался)
+        if pub_url or repo_url:
+            try:
+                _extra = ["\n## 🚀 Опубликованный проект\n"]
+                if repo_url:
+                    _extra.append(f"- Репозиторий: {repo_url}")
+                if pub_url:
+                    _extra.append(f"- Работающий сервис: {pub_url}")
+                with (run_dir / "REPORT.md").open("a", encoding="utf-8") as _f:
+                    _f.write("\n".join(_extra) + "\n")
+                print("📄 Ссылка на проект дописана в REPORT.md")
+            except OSError:
+                pass
 
     # ── CI fix loop: ждём CI, при падении — доработка ──────────
     if pr_url:

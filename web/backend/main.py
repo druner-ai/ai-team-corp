@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import sys
 import time as time_mod
+import signal
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -23,6 +25,14 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402  (модели, бюджет — дефолты)
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv("/home/deploy/hermes/data/.env")
+except Exception:
+    pass
+
+import urllib.request
 
 WEB_DIR = Path(__file__).resolve().parents[1]
 FRONTEND = WEB_DIR / "frontend"
@@ -69,14 +79,45 @@ app = FastAPI(title="AI Team Control")
 
 UV = shutil.which("uv") or "/home/deploy/.local/bin/uv"
 _active_run: dict = {}
+ACTIVE_RUN_FILE = Path(__file__).resolve().parent / "active_run.json"
+
+
+def _save_active_run():
+    try:
+        ACTIVE_RUN_FILE.write_text(json.dumps(_active_run, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def _load_active_run():
+    try:
+        if ACTIVE_RUN_FILE.exists():
+            _active_run.update(json.loads(ACTIVE_RUN_FILE.read_text()))
+    except Exception:
+        pass
+
+
+_load_active_run()
 
 
 def _pid_alive(pid: int) -> bool:
+    """Жив ли процесс (не зомби). Зомби (uv после завершения ребёнка) считается мёртвым."""
     try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
+        with open(f"/proc/{pid}/stat") as f:
+            data = f.read()
+        state = data.split(") ", 1)[1][0] if ") " in data else "?"
+        return state != "Z"
+    except (OSError, IndexError):
         return False
+
+
+def _gen_slug(task: str) -> str:
+    """ASCII-slug из первых латинских слов задачи + короткий timestamp-суффикс."""
+    words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,}", task)
+    base = re.sub(r"[^a-z0-9_-]+", "-", "-".join(w.lower() for w in words[:3])).strip("-")[:40]
+    if not base:
+        base = "ai"
+    return f"{base}-{time_mod.strftime('%m%d%H%M')}"
 
 
 class RunRequest(BaseModel):
@@ -233,8 +274,22 @@ def get_run(run_id: str):
 
 @app.get("/api/repos")
 def list_repos():
-    return [{"name": n, "desc": d, "url": f"https://github.com/druner-ai/{n}"}
-            for n, d in REPOS]
+    repos = {n: {"name": n, "desc": d, "url": f"https://github.com/druner-ai/{n}"}
+             for n, d in REPOS}
+    token = os.getenv("GITHUB_TOKEN")
+    if token:
+        try:
+            req = urllib.request.Request(
+                "https://api.github.com/user/repos?per_page=100&affiliation=owner",
+                headers={"Authorization": f"Bearer {token}", "User-Agent": "aitc/1.0"})
+            data = json.loads(urllib.request.urlopen(req, timeout=15).read().decode())
+            for x in data:
+                repos[x["name"]] = {"name": x["name"],
+                                    "desc": x.get("description") or "",
+                                    "url": x.get("html_url") or f"https://github.com/druner-ai/{x['name']}"}
+        except Exception:
+            pass
+    return list(repos.values())
 
 
 @app.get("/api/roles")
@@ -289,9 +344,15 @@ def start_run(payload: RunRequest):
     ts = time_mod.strftime("%Y%m%d_%H%M%S")
     log_path = f"/tmp/aitc-run-{ts}.log"
     log_file = open(log_path, "w")
+    env = os.environ.copy()
+    slug = None
+    if payload.mode == "greenfield":
+        slug = _gen_slug(task)
+        env["AI_TEAM_PUBLISH"] = "1"
+        env["AI_TEAM_PUBLISH_SLUG"] = slug
     proc = subprocess.Popen(
         cmd, cwd=str(ROOT), stdout=log_file, stderr=subprocess.STDOUT,
-        start_new_session=True,
+        start_new_session=True, env=env,
     )
     log_file.close()  # закрываем родительскую копию — fd остаётся у ребёнка
 
@@ -301,9 +362,100 @@ def start_run(payload: RunRequest):
         "task": task,
         "mode": payload.mode,
         "repo": payload.repo,
+        "slug": slug,
         "log_path": log_path,
     })
+    _save_active_run()
     return {"ok": True, "pid": proc.pid, "started_at": _active_run["started_at"]}
+
+
+PHASE_LABELS = {
+    "A0": "Baseline-тесты", "A1": "Архитектор", "A1f": "Архитектор (fallback)",
+    "A1d": "UX/UI-дизайнер", "A2": "Test Designer", "B1": "Разработчик",
+    "B2": "Fix-цикл", "D": "Арбитр", "D2": "Доводка арбитра", "C": "DevOps",
+}
+PHASES_ORDER = ["A1", "A1d", "A2", "B1", "B2", "D", "D2", "C"]
+GATE_LABELS = {
+    "G0": "спека: есть проверяемые утверждения",
+    "G_base": "baseline-тесты репо",
+    "G1": "тесты собираются и проходят",
+    "G1a": "покрытие спеки тестами",
+    "G2_1": "код проходит тесты",
+    "G2_2": "код после фикса",
+    "G2_arb": "тесты после арбитра",
+    "G2_arbfix1": "после правки арбитра",
+    "G2_arbfix2": "после правки арбитра",
+    "G3_tests": "упаковка не сломала тесты",
+    "G1a_final": "итоговое покрытие спеки",
+}
+
+
+def _gate_label(gid):
+    if gid in GATE_LABELS:
+        return GATE_LABELS[gid]
+    if gid and gid.startswith("G2_"):
+        return "код проходит тесты (итерация)"
+    return gid
+
+
+def _phase_label(pid):
+    if pid in PHASE_LABELS:
+        return PHASE_LABELS[pid]
+    if pid.startswith("B"):
+        return f"Fix-цикл {pid[1:]}"
+    return pid
+
+
+def _latest_run_dir():
+    out = ROOT / "output"
+    if not out.exists():
+        return None
+    dirs = [d for d in out.iterdir() if d.is_dir() and d.name[:8].isdigit()]
+    return max(dirs, key=lambda d: d.name) if dirs else None
+
+
+def _parse_run_phases(run_dir):
+    jl = run_dir / "run.jsonl"
+    if not jl.exists():
+        return [], [], 0.0
+    phases, order, gates = {}, [], []
+    total_cost = 0.0
+    for line in jl.read_text(errors="ignore").splitlines():
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        ev = e.get("event")
+        if ev == "phase_start":
+            pid = e.get("phase")
+            if pid and pid not in phases:
+                phases[pid] = {"id": pid, "label": _phase_label(pid), "status": "running"}
+                order.append(pid)
+        elif ev == "phase_end":
+            pid = e.get("phase")
+            if pid and pid in phases:
+                phases[pid]["status"] = "failed" if e.get("error") else "done"
+                phases[pid]["cost"] = e.get("cost")
+                phases[pid]["tokens_in"] = e.get("tokens_in")
+                phases[pid]["tokens_out"] = e.get("tokens_out")
+                phases[pid]["duration"] = e.get("duration")
+                if e.get("cost"):
+                    total_cost += float(e["cost"])
+        elif ev == "phase_skipped":
+            pid = e.get("phase")
+            if pid and pid not in phases:
+                phases[pid] = {"id": pid, "label": _phase_label(pid), "status": "skipped"}
+                order.append(pid)
+        elif ev == "gate":
+            gates.append({"id": e.get("gate"), "label": _gate_label(e.get("gate")),
+                          "green": e.get("green"),
+                          "asserts": e.get("asserts"), "problems": e.get("problems")})
+    seen = set(phases)
+    for pid in PHASES_ORDER:
+        if pid not in seen:
+            phases[pid] = {"id": pid, "label": _phase_label(pid), "status": "pending"}
+            order.append(pid)
+    return [phases[p] for p in order], gates, round(total_cost, 4)
 
 
 @app.get("/api/run/status")
@@ -313,6 +465,11 @@ def run_status():
     if not r.get("pid"):
         return {"running": False}
     running = _pid_alive(r["pid"])
+    if not running:
+        try:
+            os.waitpid(r["pid"], os.WNOHANG)
+        except (ChildProcessError, OSError):
+            pass
     elapsed = int(time_mod.time() - r["started_at"]) if r.get("started_at") else 0
     log_tail = []
     if r.get("log_path"):
@@ -321,6 +478,10 @@ def run_status():
                 log_tail = f.readlines()[-30:]
         except OSError:
             pass
+    phases, gates, total_cost = [], [], 0.0
+    _rd = _latest_run_dir()
+    if _rd:
+        phases, gates, total_cost = _parse_run_phases(_rd)
     return {
         "running": running,
         "pid": r.get("pid"),
@@ -328,8 +489,39 @@ def run_status():
         "task": r.get("task"),
         "mode": r.get("mode"),
         "repo": r.get("repo"),
+        "slug": r.get("slug"),
         "log_tail": [ln.rstrip() for ln in log_tail],
+        "phases": phases,
+        "gates": gates,
+        "total_cost": total_cost,
     }
+
+
+@app.post("/api/run/stop")
+def stop_run():
+    """Аварийная остановка активного прогона: убить группу процессов + сбросить состояние."""
+    r = _active_run
+    if not r.get("pid"):
+        return {"ok": True, "stopped": False, "reason": "нет активного прогона"}
+    pid = r["pid"]
+    stopped = False
+    try:
+        os.killpg(pid, signal.SIGTERM)
+        stopped = True
+    except (ProcessLookupError, OSError):
+        pass
+
+    def _force_kill():
+        time_mod.sleep(1.5)
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+
+    threading.Thread(target=_force_kill, daemon=True).start()
+    _active_run.clear()
+    _save_active_run()
+    return {"ok": True, "stopped": stopped, "pid": pid}
 
 
 # ── Фронт ─────────────────────────────────────────────────────

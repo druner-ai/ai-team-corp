@@ -82,8 +82,12 @@ _LOCAL_DEPS = Path.home() / ".local" / "pwdeps"
 
 
 def runtime_env() -> dict[str, str]:
-    """Окружение для процесса тестов: локальные системные библиотеки."""
+    """Окружение для процесса тестов: PYTHONPATH на корень прогона + локальные библиотеки."""
     env = dict(os.environ)
+    _run_dir = os.environ.get("AI_TEAM_RUN_DIR", "")
+    if _run_dir:
+        _existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = _run_dir + ((":" + _existing) if _existing else "")
     if not _LOCAL_DEPS.is_dir():
         return env
     lib_dirs = [str(p) for p in sorted((_LOCAL_DEPS / "usr" / "lib").glob("*-linux-gnu")) if p.is_dir()]
