@@ -4,32 +4,32 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Team Control</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260817c">
+    <link rel="stylesheet" href="/static/style.css?v=20260817d">
 </head>
 <body>
     <header>
         <h1>🤖 AI Team Control</h1>
         <nav id="tabs">
-            <button data-tab="dashboard" class="active">Дашборд</button>
+            <button data-tab="run" class="active">Запуск</button>
+            <button data-tab="dashboard">Дашборд</button>
             <button data-tab="models">Модели</button>
             <button data-tab="runs">Прогоны</button>
             <button data-tab="repos">Git</button>
             <button data-tab="config">Бюджет</button>
             <button data-tab="roles">Роли</button>
             <button data-tab="pipeline">Пайплайн</button>
-            <button data-tab="run">Запуск</button>
         </nav>
     </header>
 
     <main>
-        <section id="dashboard" class="tab active"></section>
+        <section id="run" class="tab active"></section>
+        <section id="dashboard" class="tab"></section>
         <section id="models" class="tab"></section>
         <section id="runs" class="tab"></section>
         <section id="repos" class="tab"></section>
         <section id="config" class="tab"></section>
         <section id="roles" class="tab"></section>
         <section id="pipeline" class="tab"></section>
-        <section id="run" class="tab"></section>
     </main>
 
     <script src="/static/app.js"></script>

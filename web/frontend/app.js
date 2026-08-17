@@ -341,4 +341,4 @@ async function refreshRunStatus() {
   }
 }
 
-loadDashboard();
+loadRun();
