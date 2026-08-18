@@ -1,0 +1,26 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_PATH=./urls.db
+    volumes:
+      - ./data:/app/data          # Persist SQLite file if needed
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  test:
+    build: .
+    command: pytest tests/ -v --tb=short
+    environment:
+      - DATABASE_PATH=./urls.db
+    depends_on:
+      app:
+        condition: service_healthy
+
