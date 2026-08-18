@@ -100,6 +100,7 @@ SOFT_BUDGET_USD = float(os.getenv("AI_TEAM_SOFT_BUDGET_USD", "0.15"))
 HARD_BUDGET_USD = float(os.getenv("AI_TEAM_HARD_BUDGET_USD", "0.30"))
 BUDGET_PAUSE_AT = float(os.getenv("AI_TEAM_BUDGET_PAUSE_AT", "0.80"))  # пауза на 80% HARD
 BUDGET_PAUSE_POLL_SECONDS = int(os.getenv("AI_TEAM_BUDGET_PAUSE_SECONDS", "15"))
+PHASE_TIMEOUT_SECONDS = int(os.getenv("AI_TEAM_PHASE_TIMEOUT_SECONDS", "900"))  # вотчдог: фаза > Nс = таймаут
 
 # Максимум попыток починить локально красные тесты (фаза B до PR).
 # Заменил MAX_REVIEW_CYCLES, который импортировался, но нигде не читался:

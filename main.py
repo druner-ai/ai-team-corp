@@ -32,6 +32,7 @@ from crewai.tasks.task_output import TaskOutput
 
 from config import (MODELS, FALLBACK_MODEL, PHASE_MODEL_WEIGHTS, SOFT_BUDGET_USD,
                     HARD_BUDGET_USD, BUDGET_PAUSE_AT, BUDGET_PAUSE_POLL_SECONDS,
+                    PHASE_TIMEOUT_SECONDS,
                     MAX_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS,
                     MAX_ARBITER_FIX_ATTEMPTS, TEST_TIMEOUT, OUTPUT_DIR, VERSION)
 from agents import (architect, ux_designer, test_designer, developer, qa_gate,
@@ -230,6 +231,14 @@ def save_all_artifacts(run_dir: Path) -> dict[str, Path]:
     """
     return dict(_written_files)
 
+class _PhaseTimeout(Exception):
+    """Фаза превысила лимит времени (вотчдог)."""
+
+
+def _raise_phase_timeout(signum, frame):
+    raise _PhaseTimeout()
+
+
 def _phase(name: str, agents: list, tasks: list) -> tuple[str, dict]:
     """Выполнить фазу как отдельный Crew. Возвращает (текст результата, токены).
 
@@ -243,12 +252,19 @@ def _phase(name: str, agents: list, tasks: list) -> tuple[str, dict]:
     crew = Crew(agents=agents, tasks=tasks, process=Process.sequential,
                 task_callback=on_task_complete, verbose=True)
     t0 = time.time()
+    signal.signal(signal.SIGALRM, _raise_phase_timeout)
+    signal.alarm(PHASE_TIMEOUT_SECONDS)
     try:
         result = crew.kickoff()
         error = None
+    except _PhaseTimeout:
+        result, error = None, f"⏱ ТАЙМАУТ {PHASE_TIMEOUT_SECONDS}с — фаза зависла"
+        print(f"\n⏱ Фаза {name} висела дольше {PHASE_TIMEOUT_SECONDS}с — прервана вотчдогом")
     except Exception as e:
         result, error = None, f"{type(e).__name__}: {e}"
         print(f"\n❌ Фаза {name} упала: {error}")
+    finally:
+        signal.alarm(0)
     usage = getattr(result, "token_usage", None)
     u = {
         "tokens_in": getattr(usage, "prompt_tokens", 0) or 0,
