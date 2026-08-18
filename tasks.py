@@ -831,6 +831,8 @@ def make_phase_c_tasks() -> list[Task]:
         - НЕ указывай version в docker-compose.yml (Compose V2 не требует)
         - environment в docker-compose.yml — только СПИСОК строк ("KEY=value"), НЕ map.
           Map ломает compose up (ошибка «unexpected type map[string]interface»).
+        - Значения environment с «:» или «://» (напр. URL sqlite:///...) бери в ДВОЙНЫЕ кавычки:
+          - "DATABASE_URL=sqlite:///:memory:". Хвостовое «:» без кавычек парсится как map → up падает.
         """,
         expected_output="JSON с полем files — Dockerfile, docker-compose.yml, .env.example, README.md, CI/CD.",
         agent=devops,

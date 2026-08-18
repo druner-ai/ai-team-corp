@@ -1014,7 +1014,7 @@ def save_report(run_dir: Path, metrics: dict, deploy_report: str = "") -> Path:
 
 def _deploy_failed(report: str) -> bool:
     """docker compose up упал → деплой не прошёл, паблишить нельзя."""
-    return "docker compose up failed" in report
+    return "docker compose up failed" in report or "docker compose config failed" in report
 
 
 def deploy_and_verify(run_dir: Path) -> str:
@@ -1057,6 +1057,19 @@ def deploy_and_verify(run_dir: Path) -> str:
         if env_example.exists() and not env_file.exists():
             shutil.copy(env_example, env_file)
             report_lines.append("📋 .env.example → .env (скопирован)\n")
+
+        # 0. Валидация docker-compose.yml (чёткая ошибка YAML до up)
+        cfg = subprocess.run(
+            "docker compose config --quiet",
+            shell=True, cwd=str(project_dir),
+            capture_output=True, text=True, timeout=30
+        )
+        if cfg.returncode != 0:
+            report_lines.append("### 0. Валидация docker-compose.yml\n```")
+            report_lines.append((cfg.stderr or cfg.stdout).strip())
+            report_lines.append("```")
+            report_lines.append("\n❌ docker compose config failed (YAML невалиден)")
+            return "\n".join(report_lines)
 
         # 1. Запускаем сервисы
         report_lines.append("### 1. Запуск сервисов\n```")
