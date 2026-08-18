@@ -70,3 +70,28 @@ def judge(counts: dict, collection_broken: bool, p0_failing: list | None,
     if p0_failing is not None:
         return not p0_failing
     return strict_failed == 0
+
+def cluster_failures(output: str) -> str:
+    """Сгруппировать падения по типу ошибки — детерминированно, без LLM.
+
+    Несколько падений с похожим сообщением = один корень. Возвращает сводку
+    для разработчика (или пустую строку, если падений не распознано).
+    """
+    items = re.findall(r"FAILED\s+([\w./\-]+::\w+)\s+-\s+([^\n]+)", output)
+    if not items:
+        items = re.findall(r"([\w./\-]+::\w+)\s+-\s+([^\n]+)", output)
+    groups: dict[str, list[str]] = {}
+    for test, msg in items:
+        norm = re.sub(r"[\'\"][^\'\"]*[\'\"]", "<X>", msg)  # значения в кавычках
+        norm = re.sub(r"\d+", "<N>", norm)                       # числа
+        key = norm.strip()[:90]
+        groups.setdefault(key, []).append(test)
+    if not groups:
+        return ""
+    lines = ["\n=== КЛАСТЕРЫ ПАДЕНИЙ (ищи общий корень) ==="]
+    for msg, tests in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        lines.append(f"[{len(tests)}] {msg}")
+        for t in tests[:4]:
+            lines.append(f"    - {t}")
+    return "\n".join(lines) + "\n"
+

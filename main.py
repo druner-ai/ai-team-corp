@@ -46,6 +46,7 @@ from verdict import (
     score as _score,
     errors_code_side as _errors_code_side,
     judge as _judge,
+    cluster_failures as _cluster_failures,
 )
 
 
@@ -1191,6 +1192,7 @@ def _fix_context(run_dir: Path, output: str, fallback: str = "") -> str:
     (STATUS.md) и конкретные файлы — вместо перечитывания всего контекста.
     """
     return (_limits_context() + _status_context(run_dir)
+            + _cluster_failures(output)
             + _collect_traceback_context(output, run_dir, fallback=fallback))
 
 
