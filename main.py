@@ -1012,6 +1012,11 @@ def save_report(run_dir: Path, metrics: dict, deploy_report: str = "") -> Path:
 
 # ─── deploy & verify ─────────────────────────────────────────
 
+def _deploy_failed(report: str) -> bool:
+    """docker compose up упал → деплой не прошёл, паблишить нельзя."""
+    return "docker compose up failed" in report
+
+
 def deploy_and_verify(run_dir: Path) -> str:
     """DevOps Phase 2: docker compose up, тесты, healthcheck, cleanup."""
     import subprocess
@@ -1621,6 +1626,8 @@ def main():
     deploy_report = ""
     if status == "✅ Успешно":
         deploy_report = deploy_and_verify(run_dir)
+        if _deploy_failed(deploy_report):
+            status = "❌ Деплой не прошёл (docker compose up)"
 
     # Пересчёт покрытия по финальному состоянию tests/: арбитр и цикл правок
     # могли добавить или переписать тесты после первого замера.

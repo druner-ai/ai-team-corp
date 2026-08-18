@@ -111,6 +111,32 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _live_pipeline_pid() -> int:
+    """Живой процесс пайплайна (python main.py в ai-team-corp), запущенный не через бэкенд.
+
+    Бэкенд отслеживает только свои запуски (через _active_run). CLI-запуск
+    (uv run python main.py) виден только как процесс в /proc — ищем его по
+    cmdline + cwd. Возвращает pid или 0.
+    """
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            cmd = (proc / "cmdline").read_text(errors="ignore").replace("\0", " ")
+            if "main.py" not in cmd or "uvicorn" in cmd or "backend.main" in cmd:
+                continue
+            cwd = os.readlink(proc / "cwd")
+            if "/ai-team-corp" not in cwd:
+                continue
+            st = (proc / "stat").read_text()
+            state = st.split(") ", 1)[1][0] if ") " in st else "?"
+            if state != "Z":
+                return int(proc.name)
+        except (OSError, IndexError):
+            continue
+    return 0
+
+
 def _gen_slug(task: str) -> str:
     """ASCII-slug из первых латинских слов задачи + короткий timestamp-суффикс."""
     words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,}", task)
@@ -257,7 +283,15 @@ def list_runs():
     if not out.is_dir():
         return []
     active_pid = _active_run.get("pid")
-    alive = bool(active_pid) and _pid_alive(active_pid)
+    backend_alive = bool(active_pid) and _pid_alive(active_pid)
+    cli_pid = _live_pipeline_pid() if not backend_alive else 0
+    alive = backend_alive or bool(cli_pid)
+    # самый свежий незавершённый прогон (нет REPORT.md) — маркер CLI-запуска
+    incomplete = None
+    for _d in sorted(out.iterdir(), reverse=True):
+        if _d.is_dir() and not (_d / "REPORT.md").exists():
+            incomplete = _d.name
+            break
     runs = []
     for d in sorted(out.iterdir(), reverse=True):
         if not d.is_dir():
@@ -267,7 +301,7 @@ def list_runs():
         runs.append({
             "id": d.name,
             "has_report": report.exists(),
-            "running": alive and _run_id_is_active(d.name),
+            "running": (backend_alive and _run_id_is_active(d.name)) or (bool(cli_pid) and d.name == incomplete),
             **metrics,
         })
     return runs
@@ -480,9 +514,13 @@ def _parse_run_phases(run_dir):
 def run_status():
     """Живой статус активного прогона: жив ли процесс, elapsed, хвост лога."""
     r = _active_run
-    if not r.get("pid"):
+    pid = r.get("pid")
+    running = bool(pid) and _pid_alive(pid)
+    if not running:
+        pid = _live_pipeline_pid()
+        running = bool(pid)
+    if not running and not r.get("pid"):
         return {"running": False}
-    running = _pid_alive(r["pid"])
     if not running:
         try:
             os.waitpid(r["pid"], os.WNOHANG)
@@ -502,7 +540,7 @@ def run_status():
         phases, gates, total_cost = _parse_run_phases(_rd)
     return {
         "running": running,
-        "pid": r.get("pid"),
+        "pid": pid or r.get("pid"),
         "elapsed": elapsed,
         "task": r.get("task"),
         "mode": r.get("mode"),
