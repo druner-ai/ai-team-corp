@@ -7,6 +7,11 @@ import os
 
 VERSION = "1.0.0"
 
+# ── Пути/хост (переопределяются через env; дефолты — сервер B) ──
+HERMES_ENV = os.environ.get("HERMES_ENV", "/home/deploy/hermes/data/.env")
+UV_FALLBACK = os.environ.get("UV_FALLBACK", "/home/deploy/.local/bin/uv")
+PUBLIC_HOST = os.environ.get("PUBLIC_HOST", "38.244.193.214")
+
 # Модели через OpenRouter.
 # Цены за 1M токенов (вход/выход) сверены с https://openrouter.ai/api/v1/models
 # 2026-08-12. До этой сверки в конфиге стояли цифры, разошедшиеся с прайсом по

@@ -9,7 +9,8 @@ import sys
 import requests
 from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv("/home/deploy/hermes/data/.env")
+from config import HERMES_ENV
+load_dotenv(HERMES_ENV)
 
 TOKEN = os.getenv("GITHUB_TOKEN")
 USER = os.getenv("GITHUB_USER", "druner-ai")

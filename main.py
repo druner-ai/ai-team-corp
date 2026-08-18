@@ -24,7 +24,8 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-load_dotenv("/home/deploy/hermes/data/.env")
+from config import HERMES_ENV
+load_dotenv(HERMES_ENV)
 
 from crewai import Crew, Process
 from crewai.tasks.task_output import TaskOutput

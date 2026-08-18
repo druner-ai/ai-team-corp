@@ -17,9 +17,11 @@ import subprocess
 import time
 from pathlib import Path
 
+from config import UV_FALLBACK, PUBLIC_HOST
+
 PUBLISH_ROOT = Path.home() / "published"
 SYSTEMD_DIR = Path.home() / ".config" / "systemd" / "user"
-_UV = shutil.which("uv") or "/home/deploy/.local/bin/uv"
+_UV = shutil.which("uv") or UV_FALLBACK
 
 CADDY_CONF = Path("/etc/caddy/Caddyfile")
 
@@ -188,7 +190,7 @@ def publish_service(run_dir: Path, slug: str) -> dict:
 
 def _caddy_block(slug: str, port: int) -> str:
     return (
-        f"{slug}.38.244.193.214.sslip.io, {slug}.tochenyi.ru {{\n"
+        f"{slug}.{PUBLIC_HOST}.sslip.io, {slug}.tochenyi.ru {{\n"
         f"    reverse_proxy 127.0.0.1:{port}\n"
         "}\n"
     )

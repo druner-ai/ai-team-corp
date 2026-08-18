@@ -10,10 +10,10 @@ from crewai.tools import tool
 
 from observability import log_event
 
-_UV = shutil.which("uv") or "/home/deploy/.local/bin/uv"
+_UV = shutil.which("uv") or UV_FALLBACK
 
 # Пер-тест таймаут pytest — единый источник правды в config.py (LIMITS).
-from config import TEST_TIMEOUT as _TEST_TIMEOUT
+from config import TEST_TIMEOUT as _TEST_TIMEOUT, UV_FALLBACK
 
 
 def _pytest_args(pytest: Path, tests_dir: Path) -> list[str]:
