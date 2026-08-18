@@ -842,9 +842,10 @@ def main():
             # разработчик: тест-дизайнер править tests/ бессилен.
             _, u = _phase(f"B{attempt}", [developer],
                           [make_fix_task(tests_summary, context, attempt)])
-        elif counts["errors"] > 0:
-            # Ошибки сбора в самих тестах (синтаксис, импорт тест-хелперов) — чинит
-            # Test Designer (у него есть право править tests/).
+        elif counts["errors"] > 0 or _collection_failed(tests_summary):
+            # Ошибки сбора (синтаксис/импорт) ИЛИ пустой набор (collected 0 items,
+            # no tests ran) — чинит Test Designer: он владелец tests/ и знает
+            # формат (test_*.py, conftest.py). Разработчик здесь бессилен.
             _, u = _phase(f"B{attempt}", [test_designer],
                           [make_test_fix_task(tests_summary, context, attempt)])
         else:

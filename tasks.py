@@ -483,6 +483,15 @@ def make_impl_tasks(spec: str, enhance: bool = False, existing_code: str = "",
         - Монтируй на подпуть: app.mount("/static", StaticFiles(directory=...)),
           а index.html отдавай отдельным @app.get("/") через FileResponse.
 
+        КРИТИЧНО — ФРОНТЕНД JS (если у проекта есть UI):
+        - Если дизайнер создал static/index.html — ОБЯЗАТЕЛЬНО создай
+          static/app.js с рабочей логикой: fetch к API-эндпоинтам, обработчики
+          кликов по кнопкам, динамическое обновление DOM без перезагрузки.
+        - Подключи app.js в index.html: <script src="app.js"></script>
+          (или inline <script>).
+        - Статичный HTML без JS визуально есть, но кнопки не работают —
+          это P0-провал: гейт фронта заблокирует публикацию.
+
         КРИТИЧНО — ТИПЫ ДАННЫХ:
         - Используй str (не HttpUrl) для URL-полей в response
         - HttpUrl нормализует URL (добавляет trailing slash) — это ломает тесты
@@ -631,7 +640,8 @@ def make_test_fix_task(pytest_output: str, context: str, attempt: int) -> Task:
     """
     return Task(
         description=f"""
-        Тесты ПАДАЮТ НА СБОРЕ (collection error), а не на проверках. Ниже —
+        Тесты ПАДАЮТ НА СБОРЕ (collection error) ИЛИ набор пустой
+        («collected 0 items» / «no tests ran»), а не на проверках. Ниже —
         РЕАЛЬНЫЙ вывод pytest.
 
         === ВЫВОД PYTEST (попытка {attempt}) ===
@@ -653,6 +663,9 @@ def make_test_fix_task(pytest_output: str, context: str, attempt: int) -> Task:
           ослабляй проверки (assert) — только устрани причину сбора.
         - Если ошибка в коде (тест импортирует несуществующее имя) — почини код.
         - Импортируй ВСЕ имена, которые используешь (httpx, Depends, Query и т.п.).
+        - Если pytest пишет «collected 0 items» и тесты в tests/ есть — формат/путь
+          не тот (файлы не легли в tests/, нет conftest.py, имена не test_*.py).
+          Верни тесты правильными путями в tests/ (test_*.py + conftest.py).
         - Если ошибка сбора — ModuleNotFoundError: No module named 'X':
           * X = playwright или pytest_playwright → ты написал БРАУЗЕРНЫЙ тест для
             простого приложения. Перепиши тест БЕЗ playwright (httpx/TestClient),
