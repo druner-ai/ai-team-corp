@@ -5,7 +5,6 @@ import os
 import re
 from pathlib import Path
 
-from crewai.tasks.task_output import TaskOutput
 from observability import log_event
 
 
@@ -19,71 +18,15 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[^\w-]+", "_", name)
 
 
-def on_task_complete(output: TaskOutput):
-    """Callback — сохранить вывод и СРАЗУ материализовать файлы на диск.
-
-    Ключевое свойство: следующая роль и гейты видят файлы предыдущей
-    роли на диске, а не только в тексте контекста. Раньше вся раскладка
-    шла после crew.kickoff(), и QA закономерно получал "No tests/ directory".
-
-    Пишет в два места:
-      1. stage_NN_*/  — неизменяемый журнал того, что выдала роль
-      2. run_dir/     — рабочее дерево, в котором работает pytest
-    """
-    task_name = output.name or "unknown"
-    agent_role = str(output.agent) if output.agent else "unknown"
-    raw_output = str(output.raw) if output.raw else ""
-    json_output = output.json_dict or {}
-
-    idx = len(_all_outputs)
-    _all_outputs.append((task_name, agent_role, raw_output, json_output))
-
-    if _RUN_DIR is None:
-        print("⚠️ on_task_complete: _RUN_DIR не выставлен, файлы не записаны")
-        return
-
-    stage_name, protect = STAGE_BY_TASK.get(
-        task_name, (f"stage_xx_{task_name}", False)
-    )
-    # Fix вызывается в цикле: без номера попытки журнал второй попытки
-    # затирал бы первую, и сравнить версии было бы нечем.
-    if task_name == "fix" and _FIX_ATTEMPT:
-        stage_name = f"{stage_name}_{_FIX_ATTEMPT}"
-
-    # 1. Сырой вывод роли — всегда
-    # Роль может содержать '/' (напр. "UX/UI дизайнер") — чистим путь-небезопасные
-    # символы, иначе "task_01_UX/UI_дизайнер.md" трактуется как вложенный путь и
-    # запись падает FileNotFoundError (прогон 20260813_211554: вывод дизайнера потерян).
-    safe_role = _safe_filename(agent_role)
-    task_file = _RUN_DIR / f"task_{idx:02d}_{safe_role}.md"
-    task_file.write_text(
-        f"# {agent_role}\n\n## Задача\n{task_name}\n\n## Результат\n\n{raw_output}"
-    )
-    _written_files[task_file.name] = task_file
-
-    # 2. Журнал стадии — неизменяемая копия вывода роли.
-    #    Нужна для сравнения версий и для проверки неослабления тестов.
-    stage_dir = _RUN_DIR / stage_name
-    stage_dir.mkdir(parents=True, exist_ok=True)
-    _extract_files(raw_output, stage_dir, protect_tests=protect,
-                   role=agent_role, json_dict=json_output)
-
-    # 3. Рабочее дерево — то, что видят следующие роли и гейты
-    written = _extract_files(raw_output, _RUN_DIR, protect_tests=protect,
-                            role=agent_role, json_dict=json_output)
-    _written_files.update(written)
-
-    log_event({
-        "event": "artifacts",
-        "task": task_name,
-        "role": agent_role,
-        "stage": stage_name,
-        "protect_tests": protect,
-        "files": sorted(written.keys()),
-        "raw_len": len(raw_output),
-    })
-    if written:
-        print(f"   💾 {task_name}: записано {len(written)} файлов в {_RUN_DIR.name}/")
+def _matches(rel: str, pattern: str) -> bool:
+    """Путь rel подпадает под правило: каталог по префиксу, иначе имя фаила."""
+    if pattern == "*":
+        return True
+    rel_l, pat_l = rel.lower(), pattern.lower()
+    if pattern.endswith("/"):
+        return rel_l == pat_l[:-1] or rel_l.startswith(pat_l)
+    # Имя файла сравниваем без регистра: агент пишет "Dockerfile" по конвенции.
+    return rel_l == pat_l or rel_l.split("/")[-1] == pat_l
 
 
 # ─── права записи по ролям ─────────────────────────────
@@ -105,16 +48,6 @@ WRITE_RULES: dict[str, dict[str, tuple[str, ...]]] = {
     "qa":            {"allow": (), "deny": ("*",)},   # QA не пишет файлы вовсе
 }
 
-
-def _matches(rel: str, pattern: str) -> bool:
-    """Путь rel подпадает под правило: каталог по префиксу, иначе имя фаила."""
-    if pattern == "*":
-        return True
-    rel_l, pat_l = rel.lower(), pattern.lower()
-    if pattern.endswith("/"):
-        return rel_l == pat_l[:-1] or rel_l.startswith(pat_l)
-    # Имя файла сравниваем без регистра: агент пишет "Dockerfile" по конвенции.
-    return rel_l == pat_l or rel_l.split("/")[-1] == pat_l
 
 
 def _write_allowed(role: str, rel: str) -> tuple[bool, str]:
@@ -329,19 +262,3 @@ def _extract_files(text: str, run_dir: Path, protect_tests: bool = False, role: 
             saved[filepath] = result
 
     return saved
-
-
-def save_all_artifacts(run_dir: Path) -> dict[str, Path]:
-    """Вернуть манифест файлов, уже записанных колбэком.
-
-    Раскладки здесь больше нет: всё пишется в on_task_complete сразу
-    после каждой задачи. Копирование стадий в финальное дерево убрано:
-    при инкрементальной записи порядок задаёт сам ход прогона, а права
-    ролей не дают DevOps перебить код, а fix — тесты. Оттуда же раньше
-    брались два conftest.py и файлы .collision.
-
-    stage_NN_*/ остаются как журнал и в рабочее дерево не переносятся.
-    """
-    return dict(_written_files)
-
-

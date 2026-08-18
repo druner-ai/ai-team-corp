@@ -150,6 +150,86 @@ def _phase_cost(phase: str, tokens_in: int, tokens_out: int,
 
 # ─── callback: захват вывода каждой задачи ────────────────────
 
+def on_task_complete(output: TaskOutput):
+    """Callback — сохранить вывод и СРАЗУ материализовать файлы на диск.
+
+    Ключевое свойство: следующая роль и гейты видят файлы предыдущей
+    роли на диске, а не только в тексте контекста. Раньше вся раскладка
+    шла после crew.kickoff(), и QA закономерно получал "No tests/ directory".
+
+    Пишет в два места:
+      1. stage_NN_*/  — неизменяемый журнал того, что выдала роль
+      2. run_dir/     — рабочее дерево, в котором работает pytest
+    """
+    task_name = output.name or "unknown"
+    agent_role = str(output.agent) if output.agent else "unknown"
+    raw_output = str(output.raw) if output.raw else ""
+    json_output = output.json_dict or {}
+
+    idx = len(_all_outputs)
+    _all_outputs.append((task_name, agent_role, raw_output, json_output))
+
+    if _RUN_DIR is None:
+        print("⚠️ on_task_complete: _RUN_DIR не выставлен, файлы не записаны")
+        return
+
+    stage_name, protect = STAGE_BY_TASK.get(
+        task_name, (f"stage_xx_{task_name}", False)
+    )
+    # Fix вызывается в цикле: без номера попытки журнал второй попытки
+    # затирал бы первую, и сравнить версии было бы нечем.
+    if task_name == "fix" and _FIX_ATTEMPT:
+        stage_name = f"{stage_name}_{_FIX_ATTEMPT}"
+
+    # 1. Сырой вывод роли — всегда
+    # Роль может содержать '/' (напр. "UX/UI дизайнер") — чистим путь-небезопасные
+    # символы, иначе "task_01_UX/UI_дизайнер.md" трактуется как вложенный путь и
+    # запись падает FileNotFoundError (прогон 20260813_211554: вывод дизайнера потерян).
+    safe_role = _safe_filename(agent_role)
+    task_file = _RUN_DIR / f"task_{idx:02d}_{safe_role}.md"
+    task_file.write_text(
+        f"# {agent_role}\n\n## Задача\n{task_name}\n\n## Результат\n\n{raw_output}"
+    )
+    _written_files[task_file.name] = task_file
+
+    # 2. Журнал стадии — неизменяемая копия вывода роли.
+    #    Нужна для сравнения версий и для проверки неослабления тестов.
+    stage_dir = _RUN_DIR / stage_name
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    _extract_files(raw_output, stage_dir, protect_tests=protect,
+                   role=agent_role, json_dict=json_output)
+
+    # 3. Рабочее дерево — то, что видят следующие роли и гейты
+    written = _extract_files(raw_output, _RUN_DIR, protect_tests=protect,
+                            role=agent_role, json_dict=json_output)
+    _written_files.update(written)
+
+    log_event({
+        "event": "artifacts",
+        "task": task_name,
+        "role": agent_role,
+        "stage": stage_name,
+        "protect_tests": protect,
+        "files": sorted(written.keys()),
+        "raw_len": len(raw_output),
+    })
+    if written:
+        print(f"   💾 {task_name}: записано {len(written)} файлов в {_RUN_DIR.name}/")
+
+
+def save_all_artifacts(run_dir: Path) -> dict[str, Path]:
+    """Вернуть манифест файлов, уже записанных колбэком.
+
+    Раскладки здесь больше нет: всё пишется в on_task_complete сразу
+    после каждой задачи. Копирование стадий в финальное дерево убрано:
+    при инкрементальной записи порядок задаёт сам ход прогона, а права
+    ролей не дают DevOps перебить код, а fix — тесты. Оттуда же раньше
+    брались два conftest.py и файлы .collision.
+
+    stage_NN_*/ остаются как журнал и в рабочее дерево не переносятся.
+    """
+    return dict(_written_files)
+
 def _phase(name: str, agents: list, tasks: list) -> tuple[str, dict]:
     """Выполнить фазу как отдельный Crew. Возвращает (текст результата, токены).
 
@@ -399,7 +479,7 @@ from spec import (assert_priorities, spec_asserts, _classify_failures,
                   _parse_failed_tests, _test_docstrings, _assert_decls,
                   _test_priority, gate_g0_spec, gate_g1a_traceability)
 
-from files import (on_task_complete, save_all_artifacts, _safe_filename,
+from files import (_safe_filename,
                     _write_file_safe, _extract_files, _extract_files_json,
                     _write_allowed, _matches, WRITE_RULES)
 
