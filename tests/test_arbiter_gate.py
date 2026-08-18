@@ -163,7 +163,7 @@ def project(tmp_path: Path, monkeypatch) -> Path:
     wf.mkdir(parents=True)
     (wf / "ci.yml").write_text(CI_OK)
     (tmp_path / "requirements-dev.txt").write_text("pytest\n")
-    monkeypatch.setattr(main, "_gate", lambda name, rd: (True, "1 passed"))
+    monkeypatch.setattr(main, "_gate", lambda name, rd, spec: (True, "1 passed"))
     return tmp_path
 
 
@@ -210,7 +210,7 @@ def test_g3_требует_playwright_install(project: Path):
 
 
 def test_g3_красный_при_красных_тестах(project: Path, monkeypatch):
-    monkeypatch.setattr(main, "_gate", lambda name, rd: (False, "1 failed"))
+    monkeypatch.setattr(main, "_gate", lambda name, rd, spec: (False, "1 failed"))
     ok, problems = main.gate_g3(project)
     assert not ok
     assert any("упаковка" in p for p in problems)

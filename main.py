@@ -39,6 +39,15 @@ from tasks import (make_spec_task, make_spec_fix_task, make_baseline_tests_task,
                    make_test_fix_task, make_phase_c_tasks, make_arbiter_task)
 from observability import init_log, log_event
 
+from verdict import (
+    parse_counts as _parse_pytest_counts,
+    collection_failed as _collection_failed,
+    score as _score,
+    errors_code_side as _errors_code_side,
+    judge as _judge,
+)
+
+
 # ─── global state ─────────────────────────────────────────────
 
 _all_outputs: list[tuple[str, str, str, dict]] = []  # (task_name, agent_role, raw_output, json_dict)
@@ -134,34 +143,6 @@ def _phase_cost(phase: str, tokens_in: int, tokens_out: int,
     cin = sum(w * MODELS[k]["price_per_1m"][0] for k, w in weights.items())
     cout = sum(w * MODELS[k]["price_per_1m"][1] for k, w in weights.items())
     return tokens_in / 1e6 * cin + tokens_out / 1e6 * cout, method
-
-
-def _parse_pytest_counts(output: str) -> dict:
-    """Вытащить числа из итоговой строки pytest.
-
-    Ищет числа вида "8 failed, 22 passed in 0.41s" в любом порядке.
-    Нули во всех полях — тоже сигнал: итоговой строки нет, тесты не собрались.
-    """
-    counts = {"passed": 0, "failed": 0, "errors": 0, "skipped": 0}
-    for key, pat in (
-        ("passed", r"(\d+) passed"),
-        ("failed", r"(\d+) failed"),
-        ("errors", r"(\d+) error"),
-        ("skipped", r"(\d+) skipped"),
-    ):
-        found = re.findall(pat, output)
-        if found:
-            counts[key] = int(found[-1])
-    return counts
-
-
-def _collection_failed(output: str) -> bool:
-    """Сбор тестов упал (импорт/INTERNALERROR/«no tests ran») — это провал, а не «0 проблем»."""
-    low = output.lower()
-    return any(m in low for m in (
-        "interneerror", "modulenotfounderror", "no tests ran",
-        "collected 0 items", "importerror",
-    ))
 
 
 # ─── callback: захват вывода каждой задачи ────────────────────
@@ -285,7 +266,7 @@ def _gate(name: str, run_dir: Path, spec: str = "") -> tuple[bool, str]:
         by_prio = _classify_failures(_parse_failed_tests(summary), docs, priorities)
         severity = {"p0_failing": by_prio["P0"], "p1_failing": by_prio["P1"],
                     "p2_failing": by_prio["P2"]}
-        green = counts["errors"] == 0 and not by_prio["P0"] and counts["passed"] > 0 and not _collection_failed(summary)
+        green = _judge(counts, _collection_failed(summary), by_prio["P0"], counts["failed"])
         _LAST_SEVERITY = severity
     log_event({"event": "gate", "gate": name, "green": green, **counts, **severity})
     (run_dir / f"gate_{name}.txt").write_text(summary)
@@ -302,31 +283,6 @@ def _gate(name: str, run_dir: Path, spec: str = "") -> tuple[bool, str]:
                             f"{counts['errors']} errors")
     print(f"\nГЕЙТ {name}: {verdict}")
     return green, summary
-
-
-def _score(summary: str) -> tuple[int, int]:
-    """Ключ сравнения двух прогонов pytest: МЕНЬШЕ — ЛУЧШЕ.
-
-    Первичен рост пройденных, а не число проблем: при ошибках сбора
-    pytest показывает пять errors вместо десятков незапущенных тестов, и по
-    числу проблем переход 5 errors → 35 passed / 11 failed выглядел бы
-    ухудшением и откатывал полезную правку.
-    """
-    c = _parse_pytest_counts(summary)
-    if _collection_failed(summary) or (c["passed"] == 0 and c["failed"] == 0 and c["errors"] == 0):
-        return 0, 1_000_000
-    return -c["passed"], c["failed"] + c["errors"]
-
-
-def _errors_code_side(summary: str) -> bool:
-    """Ошибки сбора ИЗ-ЗА КОДА, а не тестов: ImportError/AttributeError на app.*-модулях.
-
-    Тест-дизайнер правит tests/ и бессилен, когда код не отдаёт ожидаемый экспорт
-    (напр. get_redis_client лежит не в том модуле). Тогда чинить должен разработчик.
-    """
-    return bool(re.search(
-        r"cannot import name .* from ['\"]app\.|AttributeError: <module ['\"]app\.",
-        summary))
 
 
 def _code_snapshot(run_dir: Path) -> dict[str, bytes]:
