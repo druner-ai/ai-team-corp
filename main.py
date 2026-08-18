@@ -369,6 +369,29 @@ def gate_g3(run_dir: Path, spec: str = "") -> tuple[bool, list[str]]:
     return not problems, problems
 
 
+def gate_frontend(run_dir: Path) -> tuple[bool, list[str]]:
+    """Гейт фронтенда: если есть static/index.html — обязан быть рабочий JS.
+
+    Не pytest: статическая проверка полноты деливерабла. Без JS кнопки
+    «визуально есть, но не реагируют» (прогон 225008 — баг «фронт без JS»).
+    """
+    problems: list[str] = []
+    index = run_dir / "static" / "index.html"
+    if not index.exists():
+        return True, problems  # фронта нет — гейт неприменим
+    html = index.read_text(encoding="utf-8", errors="ignore")
+    js_files = [f for f in run_dir.rglob("*.js")
+                if ".venv" not in f.parts and "node_modules" not in f.parts
+                and "stage_" not in f.parts]
+    if not js_files:
+        problems.append("есть static/index.html, но нет ни одного .js — фронт неинтерактивен")
+        return False, problems
+    if not re.search(r"<script[\s>]", html) and not any(f.name in html for f in js_files):
+        problems.append("static/index.html не подключает JS (нет <script>)")
+        return False, problems
+    return True, problems
+
+
 from spec import (assert_priorities, spec_asserts, _classify_failures,
                   _parse_failed_tests, _test_docstrings, _assert_decls,
                   _test_priority, gate_g0_spec, gate_g1a_traceability)
@@ -827,11 +850,15 @@ def main():
         _accrue(u)
         # Гейт G3: упаковка не сломала тесты и CI не прячет падения.
         g3_ok, g3_problems = gate_g3(run_dir, spec)
-        if g3_ok:
+        front_ok, front_problems = gate_frontend(run_dir)
+        if g3_ok and front_ok:
             status = "✅ Успешно"
-        else:
+        elif not g3_ok:
             status = "❌ Гейт G3 не пройден"
             print("PR НЕ СОЗДАЁТСЯ: " + "; ".join(g3_problems))
+        else:
+            status = "❌ Фронт без JS"
+            print("PR НЕ СОЗДАЁТСЯ: " + "; ".join(front_problems))
     elif tests_green:
         budget_stopped = budget_stopped or "C"
         log_event({"event": "phase_skipped", "phase": "C", "reason": "budget_exceeded"})
