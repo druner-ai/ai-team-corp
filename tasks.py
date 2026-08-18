@@ -830,7 +830,7 @@ def make_phase_c_tasks() -> list[Task]:
         - Используй не-root пользователя в контейнере
         - НЕ указывай version в docker-compose.yml (Compose V2 не требует)
         - environment в docker-compose.yml — только СПИСОК строк ("KEY=value"), НЕ map.
-          Map вызывает "unexpected type map[string]interface {}" и compose up падает.
+          Map ломает compose up (ошибка «unexpected type map[string]interface»).
         """,
         expected_output="JSON с полем files — Dockerfile, docker-compose.yml, .env.example, README.md, CI/CD.",
         agent=devops,
