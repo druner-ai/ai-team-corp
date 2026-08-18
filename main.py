@@ -31,7 +31,8 @@ from crewai import Crew, Process
 from crewai.tasks.task_output import TaskOutput
 
 from config import (MODELS, FALLBACK_MODEL, PHASE_MODEL_WEIGHTS, SOFT_BUDGET_USD,
-                    HARD_BUDGET_USD, MAX_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS,
+                    HARD_BUDGET_USD, BUDGET_PAUSE_AT, BUDGET_PAUSE_POLL_SECONDS,
+                    MAX_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS,
                     MAX_ARBITER_FIX_ATTEMPTS, TEST_TIMEOUT, OUTPUT_DIR, VERSION)
 from agents import (architect, ux_designer, test_designer, developer, qa_gate,
                     devops, contract_arbiter, switch_to_fallback)
@@ -581,6 +582,8 @@ def main():
     start_time = time.time()
     tokens_in = tokens_out = 0
     spent = 0.0
+    _budget_paused = False
+    _budget_override = False
 
     def _accrue(u: dict) -> None:
         """Суммировать токены и стоимость всех фаз: usage приходит на каждый kickoff."""
@@ -588,6 +591,40 @@ def main():
         tokens_in += u["tokens_in"]
         tokens_out += u["tokens_out"]
         spent += u.get("cost", 0.0)
+
+    def _budget_checkpoint() -> bool:
+        """Пауза на BUDGET_PAUSE_AT бюджета — ждём решение пользователя.
+
+        Возвращает True, если пользователь решил «stop» (дальше не идём).
+        Решение пишется в run_dir/budget_decision.txt: 'continue' или 'stop'.
+        """
+        nonlocal _budget_paused, _budget_override
+        if _budget_paused or _budget_override:
+            return False
+        if spent <= BUDGET_PAUSE_AT * HARD_BUDGET_USD:
+            return False
+        _budget_paused = True
+        decision = run_dir / "budget_decision.txt"
+        (run_dir / "budget_paused.txt").write_text("1")
+        _status_append(run_dir, f"\n⏸ ПАУЗА БЮДЖЕТА: ${spent:.3f} из ${HARD_BUDGET_USD:.2f} "
+                                f"({BUDGET_PAUSE_AT:.0%}). Решение в {decision.name}")
+        print(f"\n⏸ ПАУЗА БЮДЖЕТА: ${spent:.3f} из ${HARD_BUDGET_USD:.2f}. "
+              f"Жду 'continue'/'stop' в {decision}")
+        while True:
+            if decision.exists():
+                d = decision.read_text(encoding="utf-8", errors="ignore").strip().lower()
+                if d == "continue":
+                    _budget_override = True
+                    (run_dir / "budget_paused.txt").unlink(missing_ok=True)
+                    _status_append(run_dir, "▶ Продолжаем до результата (бюджет снят)")
+                    print("▶ Продолжаем до результата")
+                    return False
+                if d == "stop":
+                    (run_dir / "budget_paused.txt").unlink(missing_ok=True)
+                    _status_append(run_dir, "⏹ Остановлено пользователем на паузе бюджета")
+                    print("⏹ Остановлено пользователем")
+                    return True
+            time.sleep(BUDGET_PAUSE_POLL_SECONDS)
 
     def _budget_stop(next_phase: str) -> bool:
         """Проверка бюджета между фазами. True — дальше не идём.
@@ -597,6 +634,10 @@ def main():
         """
         nonlocal spent
         global _CHEAP_MODE
+        if _budget_checkpoint():
+            return True
+        if _budget_override:
+            return False
         if spent > HARD_BUDGET_USD:
             log_event({"event": "budget", "level": "hard", "spent": round(spent, 4),
                        "limit": HARD_BUDGET_USD, "next_phase": next_phase})

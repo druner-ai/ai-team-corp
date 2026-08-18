@@ -536,10 +536,13 @@ def run_status():
             pass
     phases, gates, total_cost = [], [], 0.0
     _rd = _latest_run_dir()
+    paused = False
     if _rd:
         phases, gates, total_cost = _parse_run_phases(_rd)
+        paused = (_rd / "budget_paused.txt").exists()
     return {
         "running": running,
+        "paused": paused,
         "pid": pid or r.get("pid"),
         "elapsed": elapsed,
         "task": r.get("task"),
@@ -582,6 +585,19 @@ def stop_run():
 
 # ── Фронт ─────────────────────────────────────────────────────
 app.mount("/static", StaticFiles(directory=str(FRONTEND)), name="static")
+
+
+@app.post("/api/run/budget-decision")
+def budget_decision(payload: dict):
+    """Решение пользователя на паузе бюджета: continue / stop."""
+    decision = str(payload.get("decision", "")).strip().lower()
+    if decision not in ("continue", "stop"):
+        return {"ok": False, "error": "decision must be continue|stop"}
+    _rd = _latest_run_dir()
+    if not _rd:
+        return {"ok": False, "error": "нет активного прогона"}
+    (_rd / "budget_decision.txt").write_text(decision)
+    return {"ok": True, "decision": decision}
 
 
 @app.get("/")

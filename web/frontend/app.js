@@ -30,6 +30,11 @@ async function api(path, opts) {
   return res.json();
 }
 
+async function budgetDecision(d) {
+  await api('/run/budget-decision', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ decision: d }) });
+  refreshRunStatus();
+}
+
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s ?? '';
@@ -334,6 +339,14 @@ async function refreshRunStatus() {
       <div class="gates">${gates}</div>
       <details><summary class="hint">Лог</summary><pre>${esc(log) || '…'}</pre></details>
     </div>`;
+  if (st.paused) {
+    el.innerHTML += `
+      <div class="role-card" style="border-color:#f59e0b">
+        <h3>⏸ Пауза бюджета — как дожимать?</h3>
+        <button onclick="budgetDecision('continue')" class="btn btn-primary" style="margin-right:8px">▶ Дожимать до результата</button>
+        <button onclick="budgetDecision('stop')" class="btn" style="background:#b91c1c;color:#fff">⏹ Остановить (по бюджету)</button>
+      </div>`;
+  }
   if (st.running) { startRunPoller(); }
   else {
     stopRunPoller();
