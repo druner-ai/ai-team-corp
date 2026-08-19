@@ -1,0 +1,40 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /tmp/tmpm4rnv4tr/venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/deploy/ai-team-corp/output/20260812_211729
+configfile: pytest.ini
+plugins: cov-7.1.0
+collecting ... collected 30 items
+
+tests/test_builder.py::test_css_inlined_in_style_tag PASSED              [  3%]
+tests/test_builder.py::test_no_external_resources PASSED                 [  6%]
+tests/test_builder.py::test_first_line_doctype PASSED                    [ 10%]
+tests/test_builder.py::test_html_structure PASSED                        [ 13%]
+tests/test_builder.py::test_meta_charset PASSED                          [ 16%]
+tests/test_cli.py::test_successful_conversion_creates_html_next_to_input PASSED [ 20%]
+tests/test_cli.py::test_no_arguments_shows_help_and_exit_code_2 PASSED   [ 23%]
+tests/test_cli.py::test_file_not_found_error PASSED                      [ 26%]
+tests/test_cli.py::test_file_not_readable_error PASSED                   [ 30%]
+tests/test_cli.py::test_output_flag_creates_file_at_specified_path PASSED [ 33%]
+tests/test_cli.py::test_title_flag_sets_html_title PASSED                [ 36%]
+tests/test_cli.py::test_file_too_large_error PASSED                      [ 40%]
+tests/test_converter.py::test_title_from_first_h1 PASSED                 [ 43%]
+tests/test_converter.py::test_title_from_h1_with_whitespace PASSED       [ 46%]
+tests/test_converter.py::test_title_default_untitled PASSED              [ 50%]
+tests/test_converter.py::test_title_default_untitled_empty PASSED        [ 53%]
+tests/test_converter.py::test_output_path_default PASSED                 [ 56%]
+tests/test_converter.py::test_output_path_custom PASSED                  [ 60%]
+tests/test_reader.py::test_read_nonexistent_file_raises PASSED           [ 63%]
+tests/test_reader.py::test_read_unreadable_file_raises PASSED            [ 66%]
+tests/test_reader.py::test_read_file_too_large_raises PASSED             [ 70%]
+tests/test_reader.py::test_read_valid_file_returns_content PASSED        [ 73%]
+tests/test_renderer.py::test_fenced_code_block_with_language PASSED      [ 76%]
+tests/test_renderer.py::test_fenced_code_without_language PASSED         [ 80%]
+tests/test_renderer.py::test_table_conversion PASSED                     [ 83%]
+tests/test_renderer.py::test_blockquote_conversion PASSED                [ 86%]
+tests/test_renderer.py::test_ordered_list PASSED                         [ 90%]
+tests/test_renderer.py::test_unordered_list PASSED                       [ 93%]
+tests/test_writer.py::test_output_utf8_no_bom PASSED                     [ 96%]
+tests/test_writer.py::test_first_line_doctype_in_file PASSED             [100%]
+
+============================== 30 passed in 0.24s ==============================
